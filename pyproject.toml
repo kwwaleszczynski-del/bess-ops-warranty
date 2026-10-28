@@ -18,6 +18,7 @@ dependencies = [
     "pyyaml>=6.0",
     "openpyxl>=3.1",
     "matplotlib>=3.8",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]
