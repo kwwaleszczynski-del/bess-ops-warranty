@@ -1,0 +1,32 @@
+# ILLUSTRATIVE manufacturer warranty of a utility-scale LFP system. The terms are generalised from public sources
+# (product data sheets with 15-year energy-retention warranties and throughput caps; DNV, "Energy storage capacity
+# warranties: beyond the fine print", 2021: about one cycle a day, limits on average SoC, C-rate and cell
+# temperature). They are not taken from any contract: check every value against the actual warranty.
+term_years: 15
+reference_energy_mwh: 100     # cycles are counted on the nameplate energy at the meter
+throughput:
+  basis: discharge_meter      # discharge_meter | discharge_dc | half_throughput_meter
+  efc_per_year: 365           # per warranty year (from COD)
+  efc_per_day: 2.0
+  total_mwh: 547500           # 15 years x 365 cycles x 100 MWh
+soc:
+  min: 0.02
+  max: 0.97
+  sustained_minutes: 60       # tolerated time outside the window
+  max_mean: 0.5               # resting: rolling mean SoC
+  mean_window_days: 30
+c_rate:
+  max: 0.55                   # |P| / reference energy
+  basis: p_dc
+  sustained_minutes: 15
+temperature:
+  cell_max_c: 40
+  cell_min_c: 10
+  sustained_minutes: 30
+  annual_mean_cell_max_c: 28
+  ambient_min_c: -30
+  ambient_max_c: 45
+retention:                    # guaranteed energy as a share of the reference energy, by warranty year
+  years: [0, 1, 2, 3, 5, 10, 15]
+  soh:   [1.00, 0.97, 0.95, 0.935, 0.91, 0.85, 0.78]
+  equivalent_age: true        # read the curve at max(years, cumulative EFC / efc_per_year)

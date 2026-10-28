@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grid battery operations and warranty</title>
+<meta name="description" content="Operational monitoring of grid batteries against warranty and LTSA terms: metered round-trip efficiency with auxiliaries, contractual availability, cycles, capacity tests and SoH forecast; benchmarked on every battery of Australia's NEM and validated with an operator's own data.">
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10); --accent: #2a78d6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --bad: #c8423b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10); --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --bad: #d4574f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10); --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --bad: #d4574f;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+       font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.7rem; margin: 0 0 6px; }
+h2 { font-size: 1.2rem; margin: 36px 0 6px; }
+p { color: var(--ink2); margin: 6px 0 12px; max-width: 82ch; }
+a { color: var(--accent); }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 16px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 18px 0; }
+.tile .v { font-size: 1.5rem; font-weight: 650; }
+.tile .l { color: var(--ink2); font-size: 0.86rem; }
+.plot { width: 100%; height: 440px; }
+.plot.tall { height: 760px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0; color: var(--ink2);
+            font-size: 0.9rem; }
+select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--ring); background: var(--surface);
+         color: var(--ink); width: 100%; max-width: 460px; }
+.controls label { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.84rem; }
+th, td { border-bottom: 1px solid var(--grid); padding: 5px 7px; text-align: left; white-space: nowrap; }
+th { color: var(--ink2); font-weight: 600; cursor: pointer; user-select: none; position: sticky; top: 0;
+     background: var(--surface); }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+.note { font-size: 0.84rem; color: var(--muted); }
+.warn { border-left: 3px solid var(--s2); padding-left: 10px; }
+iframe { width: 100%; height: 760px; border: 1px solid var(--ring); border-radius: 10px; background: #fff; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Grid battery operations against warranty and LTSA</h1>
+<p>An asset manager's view of a battery: what the meter says about round-trip efficiency once the auxiliaries are
+counted, how available it was by the contract's formula, how hard it is cycled against the warranty conditions,
+and what the capacity tests say about when it will need augmentation. The same estimators run on every grid
+battery in Australia's National Electricity Market (public AEMO data), are checked against an operator's own
+published data, and are verified on a synthetic battery with known truth. Code and method:
+<a href="https://github.com/kwwaleszczynski-del/bess-ops-warranty">github.com/kwwaleszczynski-del/bess-ops-warranty</a>.</p>
+<p class="warn">Warranty, LTSA and liquidated-damages terms in the examples are illustrative placeholders, not a
+reading of any contract. Market data show what an operator offers and what the connection point measures; they do
+not show auxiliaries behind the meter, temperatures or capacity tests (see Limitations in the README).</p>
+
+<div class="tiles" id="tiles"></div>
+
+<h2>1. Round-trip efficiency of every NEM battery</h2>
+<p>RTE at AEMO's SCADA point over local days with at least 0.3 cycles, corrected for the change of the stored
+energy each battery reports to AEMO (BMS recalibration jumps removed, months with an inconsistent report left out).
+Bars span the 25th to 75th percentile of the days, the dot is the median, the tick the whole year. Crosses: the
+conversion efficiency from a regression of the same reported energy in the companion project
+bess-soc-soh-degradation, which separates standby losses; circles: the efficiency factors registered with AEMO.</p>
+<div class="card"><div id="rte-plot" class="plot tall"></div></div>
+
+<h2>2. Offered availability: what the bids can and cannot tell</h2>
+<p>Capacity-weighted availability from the discharge availability each battery offers (DISPATCHLOAD.AVAILABILITY
+against registered MW), over all intervals and over intervals in which it held more than 10 % of its registered
+energy. Offers mix outages with energy limits, capacity held back under other contracts (system-integrity schemes)
+and bidding style: some units offer only when they intend to discharge. It is an offered, not a technical
+availability.</p>
+<div class="card"><div id="av-plot" class="plot tall"></div></div>
+
+<h2>3. One battery over the year</h2>
+<div class="controls"><label>Battery <select id="unit"></select></label></div>
+<div class="card"><div id="unit-plot" class="plot"></div></div>
+<p class="note">Upper envelope: the 99.5th percentile of the reported stored energy per month, as a share of the
+registered energy (it follows the operator's SoC window, not only the cells). Monthly RTE is shown only for months
+with a consistent stored-energy report.</p>
+
+<h2>4. Fleet table</h2>
+<p class="note">Click a column to sort. Operational months: at least one cycle and 20 days of data.</p>
+<div class="card scroll" style="max-height:520px"><table id="fleet"></table></div>
+
+<h2>5. Validation with the operator's own data: New England BESS</h2>
+<p>ACEN publishes 5-minute power and SoC of both 100 MW sections. Computing the daily RTE three ways separates the
+two things that differ between an operator's data and market data: the metering point (A vs B) and the source of
+the stored energy (B vs C).</p>
+<div class="card"><div id="acen-plot" class="plot"></div></div>
+<div class="card scroll" style="margin-top:12px"><table id="acen-table"></table></div>
+
+<h2>6. Verification on a synthetic battery with known truth</h2>
+<p>Two years of 15-minute EMS data of a 50 MW / 100 MWh battery simulated from a physical energy balance (PCS
+0.975 and battery 0.98 one way, auxiliaries driven by ambient temperature, outages, capacity fade, four capacity
+tests at different cell temperatures, injected warranty violations), exported with naive Europe/Warsaw timestamps
+including both DST changes.</p>
+<div class="two">
+  <div class="card"><div id="syn-rte" class="plot"></div></div>
+  <div class="card"><div id="syn-soh" class="plot"></div></div>
+</div>
+<div class="card scroll" style="margin-top:12px"><table id="syn-table"></table></div>
+
+<h2>7. Example monthly report</h2>
+<p>The report the tool writes for one month of the synthetic battery: KPIs against the guarantees, warranty
+status and violations, illustrative liquidated damages per LTSA year, capacity tests, SoH forecast and the energy
+balance. The same report as an Excel workbook (openpyxl, conditional formatting):
+<a id="xlsx" href="#">download .xlsx</a>.</p>
+<iframe id="report" title="Example monthly report" loading="lazy"></iframe>
+
+<p class="note" style="margin-top:28px">Data: Australian Energy Market Operator (AEMO), MMSDM archive (dispatch SCADA,
+dispatch results, registrations), used under AEMO's copyright permissions; ACEN Australia, New England BESS
+operational data (used locally, only derived statistics shown). Results are derived from this material; neither
+provider is responsible for this analysis.</p>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"
+        integrity="sha384-cCVCZkAjYNxaYKbM8lsArLznDF/SvMFr1jcZrvOpSTCa0W40ZAdLzHCEulnUa5i7" crossorigin="anonymous"></script>
+<script src="data.js"></script>
+<script>
+const D = window.DATA;
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (x, d = 1) => x == null || isNaN(x) ? "-" : Number(x).toFixed(d);
+const pct = (x, d = 1) => x == null || isNaN(x) ? "-" : (100 * x).toFixed(d) + " %";
+const REG = {NSW: "#2a78d6", VIC: "#1baf7a", QLD: "#e3a33b", SA: "#c8423b", TAS: "#8e7cc3"};
+function layoutBase(extra) {
+  return Object.assign({paper_bgcolor: css("--surface"), plot_bgcolor: css("--surface"),
+    font: {family: "system-ui, -apple-system, Segoe UI, sans-serif", color: css("--ink2"), size: 12},
+    margin: {l: 60, r: 16, t: 24, b: 50}, hoverlabel: {bgcolor: css("--surface"), font: {color: css("--ink")}},
+    legend: narrow() ? {orientation: "h", y: -0.22, x: 0, font: {size: 10}} : {orientation: "h", y: 1.06, x: 0}},
+    extra);
+}
+const axis = extra => Object.assign({gridcolor: css("--grid"), linecolor: css("--axis"), zeroline: false}, extra);
+const cfg = {responsive: true, displaylogo: false};
+const median = a => { const s = a.filter(x => x != null).sort((p, q) => p - q); return s.length ? s[Math.floor(s.length / 2)] : null; };
+const narrow = () => window.innerWidth < 640;
+const label = r => narrow() ? `${r.duid} (${fmt(r.mw, 0)} MW)` :
+  `${r.name.slice(0, 26)} ${r.duid} (${r.region}, ${fmt(r.mw, 0)} MW / ${fmt(r.mwh, 0)} MWh)`;
+const optLabel = r => `${r.name.slice(0, 30)} ${r.duid} (${r.region}, ${fmt(r.mw, 0)} MW / ${fmt(r.mwh, 0)} MWh)`;
+const left = () => narrow() ? 110 : 300;
+
+function tiles() {
+  const F = D.fleet ? D.fleet.summary : [];
+  const mw = F.reduce((s, r) => s + r.mw, 0);
+  const rte = median(F.map(r => r.rte_daily_median));
+  const av = median(F.map(r => r.availability_capacity));
+  const avs = median(F.map(r => r.availability_capacity_soc_ok));
+  const A = D.acen ? D.acen.summary.find(r => r.duid === "NESBESS1") : null;
+  const V = D.synthetic.verification;
+  const t = [
+    [`${F.length} batteries`, `${fmt(mw / 1000, 1)} GW in the NEM benchmark, Oct 2025 - Sep 2026`],
+    [pct(rte, 1), "median daily RTE at the SCADA point (median over batteries)"],
+    [`${pct(av, 0)} / ${pct(avs, 0)}`, "median offered availability: all intervals / with energy stored"],
+  ];
+  if (A) t.push([`${pct(A.daily_rte_median_A_operator, 1)} vs ${pct(A.daily_rte_median_B_scada_operator_soc, 1)}`,
+                 "New England BESS: daily RTE from the operator's power vs AEMO SCADA (same SoC)"]);
+  t.push([`${fmt(V.rte_excl_aux.yearly[0], 4)} / ${fmt(V.rte_excl_aux.truth, 4)}`,
+          "synthetic battery: estimated / true RTE without auxiliaries"]);
+  document.getElementById("tiles").innerHTML = t.map(x =>
+    `<div class="card tile"><div class="v">${x[0]}</div><div class="l">${x[1]}</div></div>`).join("");
+}
+
+function rtePlot() {
+  if (!D.fleet) return;
+  const s = D.fleet.summary.filter(r => r.rte_daily_median != null && r.valid_days >= 30)
+    .sort((a, b) => a.rte_daily_median - b.rte_daily_median);
+  const y = s.map(label);
+  const iqr = {type: "scatter", mode: "lines", x: [], y: [], line: {width: 6, color: css("--s1")}, opacity: 0.35,
+    hoverinfo: "skip", name: "daily IQR"};
+  s.forEach(r => { iqr.x.push(r.rte_daily_p25, r.rte_daily_p75, null); iqr.y.push(label(r), label(r), null); });
+  const med = {type: "scatter", mode: "markers", x: s.map(r => r.rte_daily_median), y, name: "daily median",
+    marker: {color: s.map(r => REG[r.region] || "#888"), size: 8},
+    customdata: s.map(r => [r.valid_days, r.rte_daily_p25, r.rte_daily_p75]),
+    hovertemplate: "%{y}<br>median %{x:.3f}, IQR %{customdata[1]:.3f}-%{customdata[2]:.3f}, %{customdata[0]} days<extra></extra>"};
+  const year = {type: "scatter", mode: "markers", x: s.map(r => r.rte_corrected), y, name: "whole year",
+    marker: {symbol: "line-ns-open", size: 12, color: css("--ink")}, hovertemplate: "%{y}<br>year %{x:.3f}<extra></extra>"};
+  const reg = {type: "scatter", mode: "markers", x: s.map(r => r.rte_regression_companion), y,
+    name: "conversion RTE, regression (companion)", marker: {symbol: "x", size: 7, color: css("--muted")},
+    hovertemplate: "%{y}<br>regression %{x:.3f}<extra></extra>"};
+  const regd = {type: "scatter", mode: "markers", x: s.map(r => r.rte_registered < 0.999 ? r.rte_registered : null), y,
+    name: "registered factors (below 1)",
+    marker: {symbol: "circle-open", size: 7, color: css("--axis")}, hovertemplate: "%{y}<br>registered %{x:.3f}<extra></extra>"};
+  Plotly.react("rte-plot", [iqr, med, year, reg, regd], layoutBase({margin: {l: left(), r: 16, t: 30, b: 46},
+    xaxis: axis({range: [0.4, 1.0], title: {text: "round-trip efficiency", font: {size: 12}}, tickformat: ".0%"}),
+    yaxis: axis({automargin: true, tickfont: {size: narrow() ? 9 : 10}})}), cfg);
+}
+
+function avPlot() {
+  if (!D.fleet) return;
+  const s = D.fleet.summary.filter(r => r.availability_capacity != null)
+    .sort((a, b) => a.availability_capacity_soc_ok - b.availability_capacity_soc_ok);
+  const y = s.map(label);
+  const link = {type: "scatter", mode: "lines", x: [], y: [], line: {width: 2, color: css("--axis")},
+    hoverinfo: "skip", showlegend: false};
+  s.forEach(r => { link.x.push(r.availability_capacity, r.availability_capacity_soc_ok, null); link.y.push(label(r), label(r), null); });
+  const all = {type: "scatter", mode: "markers", x: s.map(r => r.availability_capacity), y, name: "all intervals",
+    marker: {color: css("--s2"), size: 8}, customdata: s.map(r => [r.offered_half_share, r.zero_offer_hours_per_year]),
+    hovertemplate: "%{y}<br>all intervals %{x:.1%}<br>offers at least half its MW %{customdata[0]:.0%} of the time<br>" +
+      "zero offer with energy stored: %{customdata[1]:.0f} h/yr<extra></extra>"};
+  const ok = {type: "scatter", mode: "markers", x: s.map(r => r.availability_capacity_soc_ok), y,
+    name: "with > 10 % energy stored", marker: {color: css("--s1"), size: 8},
+    hovertemplate: "%{y}<br>energy stored %{x:.1%}<extra></extra>"};
+  Plotly.react("av-plot", [link, all, ok], layoutBase({margin: {l: left(), r: 16, t: 30, b: 46},
+    xaxis: axis({range: [0, 1.02], tickformat: ".0%", title: {text: "offered discharge availability", font: {size: 12}}}),
+    yaxis: axis({automargin: true, tickfont: {size: narrow() ? 9 : 10}})}), cfg);
+}
+
+function unitSelect() {
+  if (!D.fleet) return;
+  const s = document.getElementById("unit");
+  s.innerHTML = D.fleet.summary.map(r => `<option value="${r.duid}">${optLabel(r)}</option>`).join("");
+  s.value = D.fleet.summary.find(r => r.duid === "BLYTHB1") ? "BLYTHB1" : D.fleet.summary[0].duid;
+  s.onchange = unitPlot;
+}
+function unitPlot() {
+  if (!D.fleet) return;
+  const u = document.getElementById("unit").value, M = D.fleet.monthly[u];
+  if (!M) return;
+  const tr = [
+    {type: "bar", x: M.month, y: M.efc, name: "cycles per month (right)", marker: {color: css("--axis")}, opacity: 0.5},
+    {type: "scatter", mode: "lines+markers", x: M.month, y: M.e_max_share, name: "energy envelope / registered",
+     yaxis: "y2", line: {color: css("--s1")}},
+    {type: "scatter", mode: "lines+markers", x: M.month, y: M.rte, name: "monthly RTE (corrected)", yaxis: "y2",
+     line: {color: css("--s3")}},
+    {type: "scatter", mode: "lines+markers", x: M.month, y: M.availability, name: "offered availability", yaxis: "y2",
+     line: {color: css("--s2"), dash: "dot"}},
+  ];
+  Plotly.react("unit-plot", tr, layoutBase({
+    yaxis: axis({side: "right", showgrid: false, title: {text: "EFC per month", font: {size: 11}}}),
+    yaxis2: axis({overlaying: "y", side: "left", tickformat: ".0%", range: [0, 1.25]}),
+    xaxis: axis({type: "category"}), margin: {l: 56, r: 56, t: 30, b: 50}}), cfg);
+}
+
+const COLS = [
+  ["name", "Battery", r => r.name], ["region", "Region", r => r.region], ["mw", "MW", r => fmt(r.mw, 0), 1],
+  ["mwh", "MWh", r => fmt(r.mwh, 0), 1], ["operational_months", "Months", r => r.operational_months, 1],
+  ["efc_per_year", "EFC / yr", r => fmt(r.efc_per_year, 0), 1],
+  ["rainflow_efc_per_year", "Rainflow EFC / yr", r => fmt(r.rainflow_efc_per_year, 0), 1],
+  ["rte_corrected", "RTE year", r => pct(r.rte_corrected), 1],
+  ["rte_daily_median", "RTE daily median", r => pct(r.rte_daily_median), 1],
+  ["rte_regression_companion", "Conversion RTE (regr.)", r => pct(r.rte_regression_companion), 1],
+  ["availability_capacity", "Offered avail.", r => pct(r.availability_capacity), 1],
+  ["availability_capacity_soc_ok", "Offered avail., energy stored", r => pct(r.availability_capacity_soc_ok), 1],
+  ["availability_time", "Time >= 95 % MW offered", r => pct(r.availability_time), 1],
+  ["soc_above_95", "Time >= 95 % energy", r => pct(r.soc_above_95), 1],
+  ["soc_below_5", "Time <= 5 % energy", r => pct(r.soc_below_5), 1],
+  ["e_max_share", "Max energy / registered", r => pct(r.e_max_share, 0), 1],
+  ["e_max_trend_pct_per_yr", "Envelope trend %/yr", r => fmt(r.e_max_trend_pct_per_yr, 1), 1],
+  ["jumps_per_month", "BMS jumps / month", r => fmt(r.jumps_per_month, 1), 1],
+];
+let sortKey = "mw", sortDir = -1;
+function table() {
+  if (!D.fleet) return;
+  const rows = [...D.fleet.summary].sort((a, b) => {
+    const x = a[sortKey], y = b[sortKey];
+    if (x == null) return 1; if (y == null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * sortDir;
+  });
+  const t = document.getElementById("fleet");
+  t.innerHTML = "<thead><tr>" + COLS.map(c => `<th data-k="${c[0]}" class="${c[3] ? "n" : ""}">${c[1]}</th>`).join("") +
+    "</tr></thead><tbody>" + rows.map(r => "<tr>" + COLS.map(c => `<td class="${c[3] ? "n" : ""}">${c[2](r)}</td>`).join("") +
+    "</tr>").join("") + "</tbody>";
+  t.querySelectorAll("th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k; sortDir = k === sortKey ? -sortDir : -1; sortKey = k; table(); });
+}
+
+function acen() {
+  if (!D.acen) return;
+  const d = D.acen.daily.NESBESS1;
+  if (d) {
+    const tr = [["A", "A: operator power + operator SoC", "--s3"], ["B", "B: AEMO SCADA + operator SoC", "--s1"],
+                ["C", "C: AEMO SCADA + energy reported to AEMO", "--s2"]].map(([k, n, c]) =>
+      ({type: "scatter", mode: "lines+markers", x: d.day, y: d[k], name: n, line: {color: css(c)}, marker: {size: 5}}));
+    Plotly.react("acen-plot", tr, layoutBase({yaxis: axis({range: [0.6, 1.0], tickformat: ".0%",
+      title: {text: "daily RTE, section 1", font: {size: 12}}}), xaxis: axis({type: "date"})}), cfg);
+  }
+  const S = D.acen.summary;
+  const rows = [
+    ["Stored-energy report correct from (detected / documented)", r => `${r.reported_correctly_from} / ${r.documented_fix || "-"}`],
+    ["Months flagged as inconsistent", r => r.inconsistent_months_flagged || "-"],
+    ["Usable energy behind the operator's SoC (fit)", r => fmt(r.operator_scale_mwh, 0) + " MWh"],
+    ["Common valid days", r => r.daily_days],
+    ["Daily RTE median, A operator", r => pct(r.daily_rte_median_A_operator)],
+    ["Daily RTE median, B SCADA + operator SoC", r => pct(r.daily_rte_median_B_scada_operator_soc)],
+    ["Daily RTE median, C market data only", r => pct(r.daily_rte_median_C_market)],
+    ["Mean absolute daily difference A-B (metering point)", r => fmt(100 * r.daily_mean_abs_diff_A_B, 1) + " pp"],
+    ["Mean absolute daily difference B-C (state source)", r => fmt(100 * r.daily_mean_abs_diff_B_C, 1) + " pp"],
+    ["Rainflow EFC: operator SoC on registered MWh / market", r => `${fmt(r.rainflow_efc_operator_mwh_basis, 1)} / ${fmt(r.rainflow_efc_market, 1)}`],
+    ["Time at <= 5 %: operator SoC / reported energy", r => `${pct(r.soc_below_5_operator)} / ${pct(r.soc_below_5_market)}`],
+  ];
+  document.getElementById("acen-table").innerHTML = "<thead><tr><th></th>" + S.map(r => `<th>${r.duid}</th>`).join("") +
+    "</tr></thead><tbody>" + rows.map(([l, f]) => `<tr><td>${l}</td>` + S.map(r => `<td>${f(r)}</td>`).join("") + "</tr>").join("") +
+    "</tbody>";
+}
+
+function synthetic() {
+  const S = D.synthetic, d = S.daily;
+  const keep = d.day.map((_, i) => d.valid[i]);
+  const corr = d.corrected.filter((_, i) => keep[i]), raw = d.raw.filter((_, i) => keep[i]);
+  const V = S.verification;
+  Plotly.react("syn-rte", [
+    {type: "histogram", x: raw, name: "out / in, uncorrected", marker: {color: css("--s2")}, opacity: 0.6,
+     xbins: {start: 0.88, end: 0.94, size: 0.001}},
+    {type: "histogram", x: corr, name: "SoC-corrected", marker: {color: css("--s1")}, opacity: 0.75,
+     xbins: {start: 0.88, end: 0.94, size: 0.001}},
+  ], layoutBase({barmode: "overlay", xaxis: axis({title: {text: "daily RTE without auxiliaries", font: {size: 12}}}),
+    yaxis: axis({title: {text: "days", font: {size: 12}}}),
+    shapes: [{type: "line", x0: V.rte_excl_aux.truth, x1: V.rte_excl_aux.truth, yref: "paper", y0: 0, y1: 1,
+              line: {color: css("--ink"), dash: "dash", width: 1}}]}), cfg);
+  const F = S.forecast;
+  Plotly.react("syn-soh", [
+    {type: "scatter", mode: "lines", x: F.years, y: F.soh_p90, line: {width: 0}, showlegend: false, hoverinfo: "skip"},
+    {type: "scatter", mode: "lines", x: F.years, y: F.soh_p10, fill: "tonexty", fillcolor: "rgba(42,120,214,0.18)",
+     line: {width: 0}, name: "forecast P10-P90", hoverinfo: "skip"},
+    {type: "scatter", mode: "lines", x: F.years, y: F.soh_p50, name: "forecast", line: {color: css("--s1")}},
+    {type: "scatter", mode: "lines", x: F.years, y: F.soh_true, name: "truth", line: {color: css("--ink"), dash: "dot"}},
+    {type: "scatter", mode: "lines", x: F.years, y: F.soh_guaranteed, name: "guaranteed (illustrative)",
+     line: {color: css("--bad"), dash: "dash"}},
+    {type: "scatter", mode: "markers", x: S.tests.years, y: S.tests.soh, name: "capacity tests",
+     error_y: {type: "data", array: S.tests.u, visible: true}, marker: {color: css("--ink"), size: 7}},
+  ], layoutBase({xaxis: axis({range: [0, 12], title: {text: "years since COD", font: {size: 12}}}),
+    yaxis: axis({range: [0.8, 1.03], tickformat: ".0%", title: {text: "tested energy / nameplate", font: {size: 12}}}),
+    shapes: [{type: "line", xref: "paper", x0: 0, x1: 1, y0: S.required_soh, y1: S.required_soh,
+              line: {color: css("--s2"), dash: "dashdot", width: 1}}]}), cfg);
+  const T = V.capacity_tests;
+  const rows = [
+    ["RTE without auxiliaries, yearly", fmt(V.rte_excl_aux.truth, 4), V.rte_excl_aux.yearly.map(x => fmt(x, 4)).join(" / ")],
+    ["RTE without auxiliaries, daily median (5-95 %)", fmt(V.rte_excl_aux.truth, 4),
+     `${fmt(V.rte_excl_aux.daily_median, 4)} (${fmt(V.rte_excl_aux.daily_p05_p95[0], 3)}-${fmt(V.rte_excl_aux.daily_p05_p95[1], 3)}; uncorrected ${fmt(V.rte_excl_aux.daily_raw_p05_p95_excl_aux[0], 3)}-${fmt(V.rte_excl_aux.daily_raw_p05_p95_excl_aux[1], 3)})`],
+    ["One-way efficiency for the SoC correction (auto)", fmt(V.rte_excl_aux.eta_truth, 4), fmt(V.rte_excl_aux.eta_auto, 4)],
+    ["Auxiliaries: base / heating / cooling", `${fmt(V.aux.truth.b0_mw, 3)} MW / ${fmt(V.aux.truth.heat_mw_per_k * 1000, 0)} kW/K below ${V.aux.truth.t_heat_c} degC / ${fmt(V.aux.truth.cool_mw_per_k * 1000, 0)} kW/K above ${V.aux.truth.t_cool_c} degC`,
+     `${fmt(V.aux.estimate.b0_mw, 3)} MW / ${fmt(V.aux.estimate.heat_mw_per_k * 1000, 1)} kW/K below ${V.aux.estimate.t_heat_c} degC / ${fmt(V.aux.estimate.cool_mw_per_k * 1000, 1)} kW/K above ${V.aux.estimate.t_cool_c} degC`],
+    ["Time-based availability 2025 / 2026", `${pct(V.availability["2025"].truth, 2)} / ${pct(V.availability["2026"].truth, 2)}`,
+     `${pct(V.availability["2025"].estimate, 2)} / ${pct(V.availability["2026"].estimate, 2)}`],
+    ["Capacity tests at 25 degC (MWh)", T.map(t => fmt(t.truth_25c_mwh, 2)).join(" / "),
+     T.map(t => `${fmt(t.estimate_mwh, 2)} +- ${fmt(t.U_mwh, 2)}`).join(" / ")],
+    ["Below 90 MWh (years since COD)", fmt(V.forecast.true_crossing_years, 1),
+     `${fmt(V.forecast.forecast_crossing_years.p50, 1)} (${fmt(V.forecast.forecast_crossing_years.p10, 1)}-${fmt(V.forecast.forecast_crossing_years.p90, 1)})`],
+    ["Battery losses, two years (relative error)", "-", pct(V.energy_balance.battery_losses_total_rel_error, 2)],
+    ["Warranty violations found", "injected: 14 days > 2 EFC, EMS at 100 %, overload, HVAC failure, annual limit",
+     Object.entries(V.violations).map(([k, v]) => `${k} ${v}`).join(", ")],
+  ];
+  document.getElementById("syn-table").innerHTML = "<thead><tr><th>Quantity</th><th>Truth</th><th>Estimate</th></tr></thead><tbody>" +
+    rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join("") + "</tbody>";
+}
+
+function report() {
+  const m = D.example_month;
+  document.getElementById("report").src = `report/example-${m}.html`;
+  document.getElementById("xlsx").href = `report/example-${m}.xlsx`;
+}
+
+function render() { tiles(); rtePlot(); avPlot(); unitPlot(); table(); acen(); synthetic(); }
+unitSelect(); report(); render();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 250); });
+</script>
+</body>
+</html>

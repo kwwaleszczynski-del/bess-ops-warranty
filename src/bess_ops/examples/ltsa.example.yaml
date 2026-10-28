@@ -1,0 +1,54 @@
+# ILLUSTRATIVE long-term service agreement (LTSA) terms: availability, RTE and capacity guarantees and liquidated
+# damages (LD). Placeholders that show the mechanics, not a reading of any contract; check every value.
+availability:
+  formula: time               # time | capacity | energy (see bess_ops/availability.py)
+  period: year                # LTSA year from COD (month for monthly reporting)
+  threshold: 0.95             # time formula: available if P_avail >= 95 % of contracted power
+  directions: [discharge, charge]
+  guaranteed: 0.97
+  planned_allowance_hours: 16 # planned maintenance excluded up to this per LTSA year, counted afterwards
+  missing_data: excluded
+  categories:                 # event category -> deemed_available | excluded | allowance | counted
+    tso_instruction: deemed_available   # instruction of the grid operator (polecenie OSP)
+    grid_outage: deemed_available
+    owner_request: deemed_available
+    force_majeure: excluded
+    capacity_test: excluded
+    planned_maintenance: allowance
+    forced_outage: counted
+rte:
+  definition: incl_aux        # incl_aux | excl_aux
+  window: month               # month | year
+  guaranteed: 0.85
+  min_efc: 5                  # windows with fewer cycles are not assessed
+  one_way_efficiency: auto    # for the SoC correction; auto = sqrt(RTE excl. auxiliaries) of the record
+capacity:
+  guaranteed: warranty        # the warranty's retention curve (at equivalent age)
+  test:
+    power_mw: 50
+    start_soc_min: 0.97
+    end_soc_max: 0.03
+    steady_tolerance: 0.05
+    min_duration_h: 1.0
+    measure: meter            # meter | dc
+    aux_correction: none      # none (net at the meter) | add_aux
+    t_ref_c: 25
+    temp_signal: t_cell_avg
+    temp_coeff_per_k: 0.003   # dischargeable energy per K of cell temperature (illustrative for LFP)
+    temp_coeff_u_per_k: 0.001
+    meter_class_pct: 0.2      # revenue meter class 0.2S
+    ct_pct: 0.2
+    vt_pct: 0.2
+    temp_u_k: 1.0
+    coverage_k: 2
+    decision_rule: guard_band # simple | guard_band
+  forecast:
+    required_mwh: 90          # e.g. energy behind a capacity obligation or an offtake contract (illustrative)
+    horizon_years: 20
+ld:
+  currency: EUR
+  annual_fee: 1000000         # LTSA fee per year (illustrative)
+  cap_share_of_fee: 0.5       # all LD in an LTSA year capped at 50 % of the fee
+  availability: {rate_per_pp: 20000, per_mw: false}
+  rte: {method: energy_cost, price_per_mwh: 90}
+  capacity: {rate_per_mwh: 25000}

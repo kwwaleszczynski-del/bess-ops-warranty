@@ -1,0 +1,9 @@
+# Example plant (the synthetic demo battery). All values are illustrative.
+name: Example BESS 50 MW / 100 MWh
+power_mw: 50                  # contracted discharge power at the meter
+charge_power_mw: 50
+energy_mwh: 100               # nameplate (contracted) energy at the meter, beginning of life
+soc_energy_mwh: 107           # energy behind SoC 0..100 % (usable energy of the BMS, data sheet)
+timezone: Europe/Warsaw       # reporting time zone: days, months and LTSA years are local
+aux_metering: behind_meter    # behind_meter | separate | none
+cod: 2025-01-01               # commercial operation date: start of the warranty and LTSA years

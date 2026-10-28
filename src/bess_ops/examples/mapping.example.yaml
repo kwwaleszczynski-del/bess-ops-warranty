@@ -1,0 +1,21 @@
+# Generic long-format EMS/SCADA export -> canonical signals (the list is in bess_ops/schema.py).
+# This example matches the synthetic demo plant (python -m bess_ops demo).
+columns:                      # names of the four columns of your table
+  timestamp: timestamp
+  device_id: device_id
+  signal: signal
+  value: value
+timezone: Europe/Warsaw       # naive timestamps are local time; in autumn the repeated hour must be in time order
+timestamp_label: start        # start | end of the interval a mean value belongs to
+step: 15min
+signals:                      # canonical: {name: your signal, scale, offset, sign, devices, combine, kind}
+  p_meter:     {name: P_POI_kW, scale: 0.001}           # kW -> MW, + export / - import
+  p_dc:        {name: P_DC_kW, scale: 0.001}            # summed over PCS-01 and PCS-02
+  p_aux:       {name: P_AUX_kW, scale: 0.001}
+  soc:         {name: SOC_PCT, scale: 0.01}             # percent -> fraction, mean over BMS-01 and BMS-02
+  t_amb:       {name: T_AMB_C}
+  t_cell_max:  {name: T_CELL_MAX_C}                     # max over the BMS
+  t_cell_avg:  {name: T_CELL_AVG_C}
+  p_avail_dis: {name: P_AVAIL_DIS_kW, scale: 0.001}
+  p_avail_ch:  {name: P_AVAIL_CH_kW, scale: 0.001}
+  e_avail:     {name: E_AVAIL_kWh, scale: 0.001}

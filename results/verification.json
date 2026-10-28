@@ -1,0 +1,153 @@
+{
+  "rte_excl_aux": {
+    "truth": 0.91298025,
+    "yearly": [
+      0.9129818702514736,
+      0.9129829874689661
+    ],
+    "monthly_max_abs_error": 0.00014477495868758794,
+    "daily_median": 0.9129966564690402,
+    "daily_p05_p95": [
+      0.9108539225078449,
+      0.9151805327015975
+    ],
+    "daily_raw_p05_p95_excl_aux": [
+      0.8985858578173861,
+      0.9270173544132541
+    ],
+    "eta_auto": 0.9555011639110538,
+    "eta_truth": 0.9555,
+    "valid_days": 710
+  },
+  "rte_incl_aux": {
+    "yearly": [
+      0.8593289809995653,
+      0.8646755842768987
+    ],
+    "monthly_min": 0.831355512946772,
+    "monthly_max": 0.8870786448602943
+  },
+  "aux": {
+    "estimate": {
+      "b0_mw": 0.10020977080025928,
+      "heat_mw_per_k": 0.01798197409212041,
+      "t_heat_c": 12.0,
+      "cool_mw_per_k": 0.029967723118865423,
+      "t_cool_c": 18.0,
+      "mw_per_mw": 0.006000331979615177
+    },
+    "truth": {
+      "b0_mw": 0.1,
+      "heat_mw_per_k": 0.018,
+      "t_heat_c": 12.0,
+      "cool_mw_per_k": 0.03,
+      "t_cool_c": 18.0,
+      "mw_per_mw": 0.006
+    },
+    "r2": 0.9999857995890536
+  },
+  "availability": {
+    "2025": {
+      "estimate": 0.9929852805887764,
+      "truth": 0.9929852805887764
+    },
+    "2026": {
+      "estimate": 0.9675968634686347,
+      "truth": 0.9675968634686347
+    }
+  },
+  "capacity_tests": [
+    {
+      "date": "2025-01-08",
+      "truth_25c_mwh": 100.60702002840588,
+      "estimate_mwh": 100.56299268607428,
+      "U_mwh": 0.9381116427248871,
+      "verdict": "inconclusive"
+    },
+    {
+      "date": "2026-01-12",
+      "truth_25c_mwh": 97.9866744372885,
+      "estimate_mwh": 97.98442045318109,
+      "U_mwh": 1.054833326542196,
+      "verdict": "inconclusive"
+    },
+    {
+      "date": "2026-07-14",
+      "truth_25c_mwh": 97.81487891977378,
+      "estimate_mwh": 97.81823561876615,
+      "U_mwh": 1.3733350699920999,
+      "verdict": "pass"
+    },
+    {
+      "date": "2026-12-09",
+      "truth_25c_mwh": 96.37321852218867,
+      "estimate_mwh": 96.37603068813347,
+      "U_mwh": 0.7212508240839056,
+      "verdict": "pass"
+    }
+  ],
+  "violations": {
+    "c_rate": 1,
+    "cell_temp_high": 2,
+    "efc_per_day": 14,
+    "efc_per_year": 1,
+    "soc_high": 5
+  },
+  "violations_injected": {
+    "efc_per_day": "14 days of the high-cycling fortnight",
+    "soc_high": "EMS misconfiguration 1-4 May 2026 (+ 4 capacity tests)",
+    "c_rate": "PCS overload test 11 March 2026",
+    "cell_temp_high": "HVAC failure 21-22 July 2026",
+    "efc_per_year": "second daily cycle from September 2026"
+  },
+  "energy_balance": {
+    "truth_closure_max_mwh": 1.7292833831561438e-12,
+    "pcs_losses_max_rel_error": 0.00113165255339963,
+    "battery_losses_max_rel_error": 0.0026520441976425296,
+    "battery_losses_total_rel_error": -0.00014016994709787633
+  },
+  "forecast": {
+    "requirement_soh": 0.9,
+    "true_crossing_years": 6.416667,
+    "forecast_crossing_years": {
+      "p10": 5.583333,
+      "p50": 6.75,
+      "p90": 9.166667
+    },
+    "soh_5y_truth": 0.9172470305239093,
+    "soh_5y_forecast": [
+      0.9086392442935604,
+      0.9216645739960563,
+      0.9346899036985522
+    ],
+    "fit": {
+      "s0": 1.0097183328754464,
+      "a": 0.02238084942128869,
+      "b": 0.01865410948993129
+    },
+    "truth_scaled": {
+      "a": 0.020447700000000003,
+      "b": 0.020447700000000003
+    }
+  },
+  "ld": [
+    {
+      "ltsa_year": "1",
+      "availability": 0.0,
+      "rte": 19473.43696139621,
+      "capacity": 0.0,
+      "total": 19473.43696139621,
+      "cap": 500000.0,
+      "capped_total": 19473.43696139621
+    },
+    {
+      "ltsa_year": "2",
+      "availability": 4806.273062730515,
+      "rte": 10649.43771311242,
+      "capacity": 0.0,
+      "total": 15455.710775842934,
+      "cap": 500000.0,
+      "capped_total": 15455.710775842934
+    }
+  ]
+}
