@@ -256,11 +256,17 @@ def verify(results: Path, seed: int = 1) -> dict:
 # NEM fleet and ACEN validation
 # ---------------------------------------------------------------------------------------------------------------------
 
-def run_nem(nem_dir: Path, acen_dir: Path | None, regression_csv: Path | None, results: Path) -> dict:
-    from bess_ops.nem import fleet_benchmark, load_cache
+def run_nem(nem_dir: Path, acen_dir: Path | None, regression_csv: Path | None, results: Path,
+            extra_dir: Path | None = None) -> dict:
+    from bess_ops.nem import fleet_benchmark, load_cache, load_extra
     results = Path(results)
     results.mkdir(parents=True, exist_ok=True)
     cache = load_cache(nem_dir)
+    if extra_dir is not None and Path(extra_dir).exists():
+        cache.extra = load_extra(extra_dir)
+        log.info("charge-side and physical availability from %s", extra_dir)
+    else:
+        log.info("no fetch-nem directory: offered discharge availability only")
     fleet = fleet_benchmark(cache)
     summ = fleet["summary"]
     if regression_csv is not None and Path(regression_csv).exists():

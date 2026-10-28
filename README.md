@@ -93,12 +93,34 @@ grows with duration**:
 
 ![fleet RTE](docs/img/fleet_rte.png)
 
-**Offered availability is a poor proxy for technical availability.** Capacity-weighted, the median battery offered
-66 % of its registered power, 87 % in intervals in which it held more than 10 % of its registered energy: a
-near-empty battery offers less. Waratah (28 %), the Victorian Big Battery (37 %) and Hornsdale (47 %) hold capacity
-back for system-integrity schemes and government contracts. Others offer availability only when they intend to
-discharge: New England BESS section 1 offered at least half its power in 9 % of the intervals, yet cycled 199
-times a year. Commissioning months add more noise.
+**Technically the batteries are available; commercially much less is offered.** For the 38 batteries in service
+for at least six months (5.3 GW / 11.1 GWh, counted from the first month in which they declared 80 % of their
+power), the physical availability declared with the bids (PASA), counted like an LTSA capacity formula (the lower of
+the discharge and charge sides against registered power; near the SoC limits only the side that can still operate),
+has a median of **95.8 %** (interquartile range 94.5-98.7 %, 96.1 % weighted by MW). 15 of the 38 reach an
+illustrative 97 % guarantee and 26 reach 95 %; the median battery is declared out 217 hours a year.
+
+| Same 38 batteries, same months | Median | Interquartile range |
+|---|---|---|
+| Technical availability (PASA, both directions, SoC-aware) | 95.8 % | 94.5-98.7 % |
+| Offered discharge availability (`AVAILABILITY` / registered MW) | 78.1 % | 66.5-83.7 % |
+| same, intervals with more than 10 % of the registered energy stored | 94.1 % | 89.6-97.5 % |
+| Offered charge availability (`MIN_AVAILABILITY` / registered charge MW) | 80.7 % | 69.1-85.5 % |
+| Declared available but not offered, share of registered MW | 15.5 % | 11.0-32.3 % |
+
+- **What is held back is commercial, not technical.** The Victorian Big Battery offered 37 % of its power and
+  Hornsdale 47 %, yet both declared 99-100 % physical availability: the difference (62 % and 53 % of their power) is
+  capacity reserved for a system-integrity scheme and a government contract. A near-empty battery also offers less.
+- **The state of charge matters for the declaration too.** Some operators declare almost no discharge capability
+  when the battery is empty: counting both directions all the time, Chinchilla would have 58 % and Greenbank 72 %;
+  SoC-aware, 84 % and 93 %. Wandoan declares 73 % of its registered charge power all year.
+- **Commissioning.** Tarong and Eraring declared 0-24 % of their power for two to three months while they were
+  already cycling in test; those months are excluded. Four batteries never declared 80 % in the year, and those in
+  service for less than six months (Waratah, Orana among them) are not in the table.
+- Offers in which a battery makes availability only when it intends to discharge (New England BESS section 1 offered
+  at least half its power in 9 % of the intervals, yet cycled 199 times a year) make the offered availability a
+  trading signal; the declared physical availability is the closest public proxy of what an LTSA would measure, but
+  it is still the participant's statement.
 
 ![fleet availability](docs/img/fleet_availability.png)
 
@@ -246,8 +268,13 @@ The cache of [nem-battery-behaviour](https://github.com/kwwaleszczynski-del/nem-
 October 2025 - September 2026) is read as the same canonical signals: `DISPATCH_UNIT_SCADA.SCADAVALUE` (instantaneous
 MW at the interval start; energy of an interval is the trapezoid between two readings, split exactly at zero
 crossings) as the meter, `DISPATCHLOAD.INITIAL_ENERGY_STORAGE` as the stored energy, `DISPATCHLOAD.AVAILABILITY`
-(the offered discharge availability) and the registered MW and MWh of `DUDETAIL`, valid per day. NEM time is
-AEST (UTC+10) without DST. A month is operational with at least one cycle and 20 days of data.
+(the offered discharge availability) and the registered discharge MW, charge MW and MWh of `DUDETAIL`, valid per
+day. `fetch-nem` adds, per battery and 5-minute interval, the offered charge availability
+(`DISPATCHLOAD.MIN_AVAILABILITY`) and from the final energy bids (`BIDPEROFFER_D`) the offered (`MAXAVAIL`) and the
+declared physical availability (`PASAAVAILABILITY`) in each direction. The technical availability is the LTSA
+capacity formula applied to PASA: $`a_i = \min\left(1, \mathrm{PASA}_{gen}/P_{dis}, \mathrm{PASA}_{load}/P_{ch}\right)`$;
+"declared but not offered" is the mean of $`\max(0, \mathrm{PASA}_{gen} - \mathrm{AVAIL})/P_{dis}`$. NEM time is AEST
+(UTC+10) without DST. A month is operational with at least one cycle and 20 days of data.
 
 ## Use it on your own data
 
@@ -303,10 +330,10 @@ auxiliary model, data quality), `report_<month>.html` (the same as a self-contai
   differ in the details that decide money (what counts as an outage, partial availability, test conditions, how
   LD are capped and offset). Every term is a YAML value to be set from the contract.
 - **What market data cannot show.** The NEM benchmark has no auxiliary metering behind the connection point, no
-  charge-side or physical availability (`MIN_AVAILABILITY` in `DISPATCHLOAD` and `PASAAVAILABILITY` in the bids are
-  published, but not in the cache used here: about 125 MB and 176 MB of download per month), no temperatures, no
-  capacity tests and no warranty terms. Its RTE includes whatever the SCADA point includes; its availability is what
-  was offered; its "usable energy" is the operator's operating window.
+  temperatures, no capacity tests, no outage log and no warranty terms. Its RTE includes whatever the SCADA point
+  includes; its offered availability is a trading decision; its technical availability is the physical availability
+  the participant declares with its bids (PASA), which is the participant's statement, not a measurement, and does
+  not say why a unit was out (forced, planned, grid); its "usable energy" is the operator's operating window.
 - **Reported stored energy is the operator's number.** It follows the BMS, which recalibrates, and some operators
   report it wrongly for months; the checks find inconsistent months and jumps, not a consistent bias of the
   scale. The level of the reported energy did not match the operator's SoC at New England BESS.
@@ -324,6 +351,7 @@ auxiliary model, data quality), `report_<month>.html` (the same as a self-contai
 | Source | Content | Licence | Size |
 |---|---|---|---|
 | AEMO MMSDM archive, NEMWeb (cache of nem-battery-behaviour) | 5-min SCADA, dispatch results incl. stored energy and availability, registrations, Oct 2025 - Sep 2026 | [AEMO copyright permissions](https://www.aemo.com.au/privacy-and-legal-notices/copyright-permissions) (use with attribution) | 125 MB cache |
+| AEMO MMSDM archive, `DISPATCHLOAD` and `BIDPEROFFER_D` (`fetch-nem`) | charge-side offered availability, offered and declared physical (PASA) availability per direction of every battery, Oct 2025 - Sep 2026 | as above | 3.55 GB download, filtered on the fly |
 | [ACEN Australia, New England BESS operational data](https://acenrenewables.com.au/new-england-bess-operational-data/) (files of bess-soc-soh-degradation) | 5-min power and SoC of both sections, May - Sep 2026 | none stated; used locally, not redistributed | 5 MB |
 | Synthetic battery (`bess_ops.synthetic`) | two years of 15-min EMS data, events, ground truth | generated on the fly | - |
 
@@ -334,9 +362,11 @@ Only derived numbers are in the repository (`results/`, `docs/`); no raw data.
 ```bash
 python -m venv .venv
 .venv/Scripts/pip install -e ".[dev]"          # .venv/bin/pip on Linux/macOS
-pytest -q                                      # 42 tests, no network, about 35 s
+pytest -q                                      # 44 tests, no network, about 30 s
 python -m bess_ops verify                      # synthetic battery vs ground truth -> results/verification.json
-python -m bess_ops nem --nem-data-dir ../nem-battery-behaviour/data --acen-dir ../bess-soc-soh-degradation/data/acen \
+python -m bess_ops fetch-nem --registry ../nem-battery-behaviour/data/registry.parquet --out data/nem_extra --jobs 4
+python -m bess_ops nem --nem-data-dir ../nem-battery-behaviour/data --nem-extra-dir data/nem_extra \
+    --acen-dir ../bess-soc-soh-degradation/data/acen \
     --regression-results ../bess-soc-soh-degradation/results/fleet_reported_soc_summary.csv
 python -m bess_ops site                        # charts, docs/data.js and the example report in docs/report/
 ```
@@ -360,6 +390,7 @@ src/bess_ops/
   report.py        monthly Excel and HTML report
   synthetic.py     the synthetic battery
   nem.py, acen.py  NEM fleet benchmark, validation with ACEN's data
+  mms.py           download of charge-side and physical availability from the AEMO archive
   study.py, site.py, cli.py
   examples/        mapping, site, warranty and LTSA YAML
 tests/             no network

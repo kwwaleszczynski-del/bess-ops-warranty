@@ -44,6 +44,8 @@ def fleet_data(results: Path) -> dict:
                          "rte": _json(list(g["rte"])), "rte_raw": _json(list(g["rte_raw"])),
                          "availability": _json(list(g["availability_capacity"])),
                          "availability_soc_ok": _json(list(g["availability_capacity_soc_ok"])),
+                         "technical": _json(list(g["availability_technical"])) if "availability_technical" in g
+                         else None,
                          "efc": _json(list(g["efc"])), "consistent": [bool(x) for x in g["stored_consistent"]]}
     return {"summary": _records(summ.reset_index()), "monthly": by_unit}
 
@@ -124,19 +126,30 @@ def chart_fleet_rte(summary: pd.DataFrame, path: Path):
 
 
 def chart_fleet_availability(summary: pd.DataFrame, path: Path):
-    s = summary.dropna(subset=["availability_capacity"]).sort_values("availability_capacity_soc_ok")
+    tech = "availability_technical" in summary
+    if tech:
+        summary = summary[summary["in_service_months"] >= 6]
+        off, ok = "availability_offered_in_service", "availability_offered_soc_ok_in_service"
+        key = "availability_technical"
+    else:
+        off, ok, key = "availability_capacity", "availability_capacity_soc_ok", "availability_capacity_soc_ok"
+    s = summary.dropna(subset=[off]).sort_values(key)
     fig, ax = plt.subplots(figsize=(9, max(4, 0.22 * len(s))))
     y = np.arange(len(s))
-    ax.hlines(y, s["availability_capacity"], s["availability_capacity_soc_ok"], color="#bbb", lw=2)
-    ax.scatter(s["availability_capacity"], y, color="#eb6834", s=16, zorder=3, label="all intervals")
-    ax.scatter(s["availability_capacity_soc_ok"], y, color="#2a78d6", s=16, zorder=3,
-               label="intervals with more than 10 % of the registered energy stored")
+    right = s[[off, ok] + ([key] if tech else [])].max(axis=1)
+    ax.hlines(y, s[off], right, color="#bbb", lw=2)
+    ax.scatter(s[off], y, color="#eb6834", s=16, zorder=3, label="offered, all intervals")
+    ax.scatter(s[ok], y, color="#2a78d6", s=16, zorder=3,
+               label="offered, intervals with more than 10 % of the registered energy stored")
+    if tech:
+        ax.scatter(s["availability_technical"], y, color="#1baf7a", marker="D", s=16, zorder=4,
+                   label="technical: declared physical availability (PASA), SoC-aware, both directions")
     ax.set_yticks(y, _labels(s), fontsize=7)
     ax.set_xlim(0, 1.02)
-    ax.set_xlabel("offered discharge availability, capacity-weighted (AVAILABILITY / registered MW)")
-    ax.legend(fontsize=7, loc="lower right")
+    ax.set_xlabel("capacity-weighted availability (MW available / registered MW)")
+    ax.legend(fontsize=7, loc="lower left")
     ax.grid(axis="x", alpha=0.3)
-    ax.set_title("NEM batteries: what the offers say about availability", fontsize=10)
+    ax.set_title("NEM batteries in service for 6+ months: offered and technical availability", fontsize=10)
     _save(fig, path)
 
 

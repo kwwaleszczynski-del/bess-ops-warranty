@@ -80,12 +80,15 @@ conversion efficiency from a regression of the same reported energy in the compa
 bess-soc-soh-degradation, which separates standby losses; circles: the efficiency factors registered with AEMO.</p>
 <div class="card"><div id="rte-plot" class="plot tall"></div></div>
 
-<h2>2. Offered availability: what the bids can and cannot tell</h2>
+<h2>2. Availability: what is offered and what is physically there</h2>
 <p>Capacity-weighted availability from the discharge availability each battery offers (DISPATCHLOAD.AVAILABILITY
 against registered MW), over all intervals and over intervals in which it held more than 10 % of its registered
-energy. Offers mix outages with energy limits, capacity held back under other contracts (system-integrity schemes)
-and bidding style: some units offer only when they intend to discharge. It is an offered, not a technical
-availability.</p>
+energy, and the technical availability: the physical availability each participant declares with its bids
+(BIDPEROFFER_D.PASAAVAILABILITY), the lower of the discharge and charge sides against registered MW, as an LTSA's
+capacity formula would count it (near the SoC limits only the direction that can still operate counts). Batteries
+in service for at least six months, from the first month they declared 80 % of their power (commissioning before).
+Offers mix outages with energy limits, capacity held back under other contracts (system-integrity schemes) and
+bidding style; the declaration does not, but it is still the participant's statement, not a measurement.</p>
 <div class="card"><div id="av-plot" class="plot tall"></div></div>
 
 <h2>3. One battery over the year</h2>
@@ -147,7 +150,10 @@ function layoutBase(extra) {
 }
 const axis = extra => Object.assign({gridcolor: css("--grid"), linecolor: css("--axis"), zeroline: false}, extra);
 const cfg = {responsive: true, displaylogo: false};
-const median = a => { const s = a.filter(x => x != null).sort((p, q) => p - q); return s.length ? s[Math.floor(s.length / 2)] : null; };
+const median = a => {
+  const s = a.filter(x => x != null).sort((p, q) => p - q), n = s.length;
+  return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : null;
+};
 const narrow = () => window.innerWidth < 640;
 const label = r => narrow() ? `${r.duid} (${fmt(r.mw, 0)} MW)` :
   `${r.name.slice(0, 26)} ${r.duid} (${r.region}, ${fmt(r.mw, 0)} MW / ${fmt(r.mwh, 0)} MWh)`;
@@ -160,12 +166,16 @@ function tiles() {
   const rte = median(F.map(r => r.rte_daily_median));
   const av = median(F.map(r => r.availability_capacity));
   const avs = median(F.map(r => r.availability_capacity_soc_ok));
+  const IS = F.filter(r => r.in_service_months >= 6);
+  const avt = IS.length ? median(IS.map(r => r.availability_technical)) : null;
+  const avo = IS.length ? median(IS.map(r => r.availability_offered_in_service)) : null;
   const A = D.acen ? D.acen.summary.find(r => r.duid === "NESBESS1") : null;
   const V = D.synthetic.verification;
   const t = [
     [`${F.length} batteries`, `${fmt(mw / 1000, 1)} GW in the NEM benchmark, Oct 2025 - Sep 2026`],
     [pct(rte, 1), "median daily RTE at the SCADA point (median over batteries)"],
-    [`${pct(av, 0)} / ${pct(avs, 0)}`, "median offered availability: all intervals / with energy stored"],
+    avt == null ? [`${pct(av, 0)} / ${pct(avs, 0)}`, "median offered availability: all intervals / with energy stored"]
+      : [`${pct(avo, 0)} / ${pct(avt, 1)}`, `median availability, ${IS.length} batteries in service for 6+ months: offered vs technical (declared physical, PASA)`],
   ];
   if (A) t.push([`${pct(A.daily_rte_median_A_operator, 1)} vs ${pct(A.daily_rte_median_B_scada_operator_soc, 1)}`,
                  "New England BESS: daily RTE from the operator's power vs AEMO SCADA (same SoC)"]);
@@ -202,20 +212,30 @@ function rtePlot() {
 
 function avPlot() {
   if (!D.fleet) return;
-  const s = D.fleet.summary.filter(r => r.availability_capacity != null)
-    .sort((a, b) => a.availability_capacity_soc_ok - b.availability_capacity_soc_ok);
+  const tech0 = D.fleet.summary.some(r => r.availability_technical != null);
+  const off = r => tech0 ? r.availability_offered_in_service : r.availability_capacity;
+  const offok = r => tech0 ? r.availability_offered_soc_ok_in_service : r.availability_capacity_soc_ok;
+  const s = D.fleet.summary.filter(r => off(r) != null && (!tech0 || r.in_service_months >= 6))
+    .sort((a, b) => (a.availability_technical ?? offok(a)) - (b.availability_technical ?? offok(b)));
   const y = s.map(label);
   const link = {type: "scatter", mode: "lines", x: [], y: [], line: {width: 2, color: css("--axis")},
     hoverinfo: "skip", showlegend: false};
-  s.forEach(r => { link.x.push(r.availability_capacity, r.availability_capacity_soc_ok, null); link.y.push(label(r), label(r), null); });
-  const all = {type: "scatter", mode: "markers", x: s.map(r => r.availability_capacity), y, name: "all intervals",
+  s.forEach(r => { link.x.push(off(r), Math.max(offok(r), r.availability_technical ?? 0), null);
+    link.y.push(label(r), label(r), null); });
+  const all = {type: "scatter", mode: "markers", x: s.map(off), y, name: "offered, all intervals",
     marker: {color: css("--s2"), size: 8}, customdata: s.map(r => [r.offered_half_share, r.zero_offer_hours_per_year]),
     hovertemplate: "%{y}<br>all intervals %{x:.1%}<br>offers at least half its MW %{customdata[0]:.0%} of the time<br>" +
       "zero offer with energy stored: %{customdata[1]:.0f} h/yr<extra></extra>"};
-  const ok = {type: "scatter", mode: "markers", x: s.map(r => r.availability_capacity_soc_ok), y,
-    name: "with > 10 % energy stored", marker: {color: css("--s1"), size: 8},
+  const ok = {type: "scatter", mode: "markers", x: s.map(offok), y,
+    name: "offered, > 10 % energy stored", marker: {color: css("--s1"), size: 8},
     hovertemplate: "%{y}<br>energy stored %{x:.1%}<extra></extra>"};
-  Plotly.react("av-plot", [link, all, ok], layoutBase({margin: {l: left(), r: 16, t: 30, b: 46},
+  const tech = {type: "scatter", mode: "markers", x: s.map(r => r.availability_technical), y,
+    name: "technical (PASA, SoC-aware)", marker: {color: css("--s3"), size: 8, symbol: "diamond"},
+    customdata: s.map(r => [r.availability_technical_dis, r.availability_technical_ch, r.withheld_share,
+                            r.technical_outage_hours_per_year]),
+    hovertemplate: "%{y}<br>technical %{x:.1%} (discharge %{customdata[0]:.1%}, charge %{customdata[1]:.1%})<br>" +
+      "declared but not offered: %{customdata[2]:.1%} of MW<br>declared out: %{customdata[3]:.0f} h/yr<extra></extra>"};
+  Plotly.react("av-plot", [link, all, ok, tech], layoutBase({margin: {l: left(), r: 16, t: 30, b: 46},
     xaxis: axis({range: [0, 1.02], tickformat: ".0%", title: {text: "offered discharge availability", font: {size: 12}}}),
     yaxis: axis({automargin: true, tickfont: {size: narrow() ? 9 : 10}})}), cfg);
 }
@@ -240,6 +260,8 @@ function unitPlot() {
     {type: "scatter", mode: "lines+markers", x: M.month, y: M.availability, name: "offered availability", yaxis: "y2",
      line: {color: css("--s2"), dash: "dot"}},
   ];
+  if (M.technical) tr.push({type: "scatter", mode: "lines+markers", x: M.month, y: M.technical, yaxis: "y2",
+    name: "technical availability (PASA)", line: {color: css("--ink2"), dash: "dash"}});
   Plotly.react("unit-plot", tr, layoutBase({
     yaxis: axis({side: "right", showgrid: false, title: {text: "EFC per month", font: {size: 11}}}),
     yaxis2: axis({overlaying: "y", side: "left", tickformat: ".0%", range: [0, 1.25]}),
@@ -257,6 +279,12 @@ const COLS = [
   ["availability_capacity", "Offered avail.", r => pct(r.availability_capacity), 1],
   ["availability_capacity_soc_ok", "Offered avail., energy stored", r => pct(r.availability_capacity_soc_ok), 1],
   ["availability_time", "Time >= 95 % MW offered", r => pct(r.availability_time), 1],
+  ["availability_charge_offered", "Offered charge avail.", r => pct(r.availability_charge_offered), 1],
+  ["availability_technical", "Technical avail. (PASA)", r => pct(r.availability_technical), 1],
+  ["in_service_from", "In service from", r => r.in_service_from || "-"],
+  ["availability_technical_time", "Time technically full", r => pct(r.availability_technical_time), 1],
+  ["withheld_share", "Declared, not offered", r => pct(r.withheld_share), 1],
+  ["technical_outage_hours_per_year", "Declared out h/yr", r => fmt(r.technical_outage_hours_per_year, 0), 1],
   ["soc_above_95", "Time >= 95 % energy", r => pct(r.soc_above_95), 1],
   ["soc_below_5", "Time <= 5 % energy", r => pct(r.soc_below_5), 1],
   ["e_max_share", "Max energy / registered", r => pct(r.e_max_share, 0), 1],

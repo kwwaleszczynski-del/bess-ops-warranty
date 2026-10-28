@@ -6,10 +6,13 @@ Usage:
         --warranty config/warranty.example.yaml --ltsa config/ltsa.example.yaml --events events.csv \\
         --month 2026-08 --out out/
     python -m bess_ops verify --results results                # estimators against the synthetic ground truth
-    python -m bess_ops nem --nem-data-dir ../nem-battery-behaviour/data --acen-dir ../bess-soc-soh-degradation/data/acen
+    python -m bess_ops fetch-nem --registry ../nem-battery-behaviour/data/registry.parquet --out data/nem_extra
+    python -m bess_ops nem --nem-data-dir ../nem-battery-behaviour/data --nem-extra-dir data/nem_extra \\
+        --acen-dir ../bess-soc-soh-degradation/data/acen
     python -m bess_ops site                                    # charts, docs/data.js and the example report
 
-Paths come from arguments or the environment variables BESS_NEM_DATA_DIR and BESS_ACEN_DIR; nothing is hard-coded.
+Paths come from arguments or the environment variables BESS_NEM_DATA_DIR, BESS_NEM_EXTRA_DIR and BESS_ACEN_DIR;
+nothing is hard-coded.
 """
 from __future__ import annotations
 
@@ -58,7 +61,18 @@ def main(argv=None) -> int:
                    help="ACEN New England BESS CSV files (env BESS_ACEN_DIR); skipped if not given")
     n.add_argument("--regression-results", type=Path,
                    help="fleet_reported_soc_summary.csv of bess-soc-soh-degradation, for the comparison")
+    n.add_argument("--nem-extra-dir", type=Path, default=_env_path("BESS_NEM_EXTRA_DIR"),
+                   help="output of fetch-nem (charge-side and physical availability); skipped if not given")
     n.add_argument("--results", type=Path, default=Path("results"))
+
+    fx = sub.add_parser("fetch-nem", help="download charge-side and physical availability (DISPATCHLOAD, "
+                                          "BIDPEROFFER_D) of the batteries, about 300 MB per month")
+    fx.add_argument("--registry", type=Path, required=True, help="registry.parquet of the NEM cache")
+    fx.add_argument("--out", type=Path, default=_env_path("BESS_NEM_EXTRA_DIR") or Path("data/nem_extra"))
+    fx.add_argument("--start", default="2025-10")
+    fx.add_argument("--end", default="2026-09")
+    fx.add_argument("--jobs", type=int, default=4, help="parallel downloads (at most 4)")
+    fx.add_argument("--refresh", action="store_true")
 
     s = sub.add_parser("site", help="README charts, docs/data.js and the example monthly report for docs/")
     s.add_argument("--results", type=Path, default=Path("results"))
@@ -80,7 +94,10 @@ def main(argv=None) -> int:
         if a.nem_data_dir is None:
             p.error("--nem-data-dir (or BESS_NEM_DATA_DIR) is required")
         from bess_ops.study import run_nem
-        run_nem(a.nem_data_dir, a.acen_dir, a.regression_results, a.results)
+        run_nem(a.nem_data_dir, a.acen_dir, a.regression_results, a.results, a.nem_extra_dir)
+    elif a.cmd == "fetch-nem":
+        from bess_ops.mms import fetch
+        fetch(a.registry, a.out, a.start, a.end, a.jobs, a.refresh)
     elif a.cmd == "site":
         from bess_ops.site import build
         build(a.results, a.docs)

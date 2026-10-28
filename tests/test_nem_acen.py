@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from bess_ops.acen import parse
+from bess_ops.mms import read_mms_zip
 from bess_ops.nem import Cache, exact_split, unit_benchmark
 
 
@@ -16,7 +17,7 @@ def test_exact_split_by_hand():
     assert np.isnan(out[-1])
 
 
-def fake_cache(days=40, eta=0.92, inverted_days=0, mw=100.0, mwh=200.0) -> Cache:
+def fake_cache(days=40, eta=0.92, inverted_days=0, mw=100.0, mwh=200.0, e0=20.0) -> Cache:
     """A battery in the AEMO format: one cycle a day, SCADA at the interval start, stored energy reported."""
     start = pd.Timestamp("2026-01-01 00:05")
     settle = pd.date_range(start, periods=288 * days, freq="5min")          # interval END (SETTLEMENTDATE)
@@ -27,7 +28,7 @@ def fake_cache(days=40, eta=0.92, inverted_days=0, mw=100.0, mwh=200.0) -> Cache
     one_way = np.sqrt(eta)
     dt = 5 / 60
     e = np.empty(len(p))
-    e[0] = 20.0
+    e[0] = e0
     for i in range(1, len(p)):
         q = p[i - 1]
         e[i] = e[i - 1] - (q / one_way if q > 0 else q * one_way) * dt
@@ -73,3 +74,53 @@ def test_acen_parser_both_formats(tmp_path):
     assert fb.index[0] == pd.Timestamp("2026-09-01 00:00")
     assert fa["mw_1"].iloc[0] == 50.0 and fa["soc_1"].iloc[0] == pytest.approx(0.415)
     assert fa["mw_2"].iloc[0] == -25.0 and fa["soc_2"].iloc[0] == pytest.approx(0.60)
+
+
+def with_extra(cache: Cache) -> Cache:
+    """Charge-side and physical availability: full, except the discharge side at half on 10 January."""
+    settle = cache.dispatch["SETTLEMENTDATE"]
+    dl = pd.DataFrame({"SETTLEMENTDATE": settle, "DUID": "TEST1", "AVAILABILITY": cache.dispatch["AVAILABILITY"],
+                       "MIN_AVAILABILITY": 100.0})
+    pasa = np.where((settle - pd.Timedelta("5min") >= "2026-01-10") & (settle - pd.Timedelta("5min") < "2026-01-11"),
+                    50.0, 100.0)
+    bids = pd.concat([pd.DataFrame({"INTERVAL_DATETIME": settle, "DUID": "TEST1", "DIRECTION": "GEN",
+                                    "MAXAVAIL": cache.dispatch["AVAILABILITY"], "PASAAVAILABILITY": pasa}),
+                      pd.DataFrame({"INTERVAL_DATETIME": settle, "DUID": "TEST1", "DIRECTION": "LOAD",
+                                    "MAXAVAIL": 100.0, "PASAAVAILABILITY": 100.0})], ignore_index=True)
+    cache.extra = {"dispatchload": dl, "bids": bids}
+    return cache
+
+
+def test_technical_availability_from_pasa():
+    # stored energy between 16 % and 77 % of 250 MWh: both directions count all the time
+    monthly, summary, daily = unit_benchmark(with_extra(fake_cache(mwh=250.0, e0=40.0)), "TEST1")
+    jan = monthly.loc["2026-01"]
+    assert jan["availability_technical_both"] == pytest.approx(30.5 / 31, abs=1e-3)
+    assert jan["availability_technical"] == pytest.approx(30.5 / 31, abs=1e-3)       # half on one day
+    assert jan["availability_technical_time"] == pytest.approx(30 / 31, abs=1e-3)
+    assert jan["availability_charge_offered"] == pytest.approx(1.0)
+    # the offline day (nothing offered) is physically available: a whole day withheld; the half-PASA day is not
+    assert jan["withheld_share"] == pytest.approx(1 / 31, abs=1e-3)
+    assert jan["technical_outage_hours"] == 0
+    # at 10 % stored energy or less only the charge side counts: the half-PASA discharge hours then do not
+    low = unit_benchmark(with_extra(fake_cache()), "TEST1")[0].loc["2026-01"]
+    assert low["availability_technical"] > low["availability_technical_both"]
+
+
+def test_mms_zip_reader(tmp_path):
+    import zipfile
+    text = chr(10).join([
+        'C,SETP.WORLD,DVD_DISPATCHLOAD,AEMO,PUBLIC,2026/07/08',
+        'I,DISPATCH,UNIT_SOLUTION,6,SETTLEMENTDATE,DUID,AVAILABILITY,MIN_AVAILABILITY',
+        'D,DISPATCH,UNIT_SOLUTION,6,"2026/06/01 00:05:00",BAT1,100,90',
+        'D,DISPATCH,UNIT_SOLUTION,6,"2026/06/01 00:05:00",GEN1,500,',
+        'D,DISPATCH,UNIT_SOLUTION,6,"2026/06/01 00:10:00",BAT1,80,70',
+        'C,END OF REPORT,5',
+    ]) + chr(10)
+    z = tmp_path / "t.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("PUBLIC_ARCHIVE#DISPATCHLOAD#FILE01#202606010000.CSV", text)
+    df = read_mms_zip(z, ["SETTLEMENTDATE", "DUID", "MIN_AVAILABILITY", "NOT_IN_FILE"], {"DUID": {"BAT1"}})
+    assert list(df.columns) == ["SETTLEMENTDATE", "DUID", "MIN_AVAILABILITY"]
+    assert df["MIN_AVAILABILITY"].tolist() == ["90", "70"]
+    assert df["SETTLEMENTDATE"].iloc[1] == "2026/06/01 00:10:00"

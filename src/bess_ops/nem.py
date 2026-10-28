@@ -9,7 +9,10 @@ AEMO table.column                        canonical signal   note
 DISPATCH_UNIT_SCADA.SCADAVALUE           p_meter            instantaneous MW at the interval start, + export
 DISPATCHLOAD.INITIAL_ENERGY_STORAGE      e_stored           stored energy (MWh) the participant reports
 DISPATCHLOAD.AVAILABILITY                p_avail_dis        discharge availability offered (bid MAXAVAIL)
-DUDETAIL MAXCAPACITY, MAXSTORAGECAPACITY contract values    registered MW and MWh, versioned by date
+DISPATCHLOAD.MIN_AVAILABILITY            p_avail_ch         charge availability offered (fetch-nem)
+BIDPEROFFER_D.PASAAVAILABILITY           technical          physical availability per direction (fetch-nem)
+DUDETAIL MAXCAPACITY, MINCAPACITY,       contract values    registered discharge MW, charge MW and MWh,
+MAXSTORAGECAPACITY                                          versioned by date
 =======================================  =================  ===============================================
 
 The cache is the one built by the companion project ``nem-battery-behaviour`` (monthly Parquet files of these
@@ -17,12 +20,12 @@ tables, AEMO MMSDM archive); its path is passed with ``--nem-data-dir`` or ``BES
 NEM market time (AEST, UTC+10, no DST), labelled by interval END; here intervals are indexed by their start.
 
 What market data do NOT give, and the benchmark therefore cannot: the auxiliary consumption behind the connection
-point (SCADA is the unit's net output; HVAC supplied from elsewhere is invisible), the charge-side availability
-(``MIN_AVAILABILITY``, not in the cache) and the physical availability declared to PASA (``PASAAVAILABILITY`` in the
-bids), capacity tests, temperatures and the warranty terms. ``AVAILABILITY`` is what the participant offers, so it
-mixes outages with energy limits (a near-empty battery offers less), commissioning and capacity held back under
-other contracts (system-integrity schemes); the availability here is an "offered availability", an upper bound of
-nothing and a lower bound of the technical one.
+point (SCADA is the unit's net output; HVAC supplied from elsewhere is invisible), capacity tests, temperatures and
+the warranty terms. ``AVAILABILITY`` is what the participant offers, so it mixes outages with energy limits (a
+near-empty battery offers less), commissioning and capacity held back under other contracts (system-integrity
+schemes): an "offered availability". ``PASAAVAILABILITY``, the physical availability the participant declares with
+its bids (``fetch-nem``, optional), is the closest public proxy of the technical availability an LTSA measures;
+it is still a declaration, not a measurement.
 
 Usage:
     cache = load_cache(Path("../nem-battery-behaviour/data"))
@@ -55,6 +58,7 @@ class Cache:
     stations: pd.DataFrame | None
     scada: pd.DataFrame
     dispatch: pd.DataFrame
+    extra: dict | None = None      # fetch-nem tables: {"dispatchload": ..., "bids": ...}
     split: dict = field(default_factory=dict, repr=False)
 
 
@@ -80,6 +84,50 @@ def load_cache(data_dir: Path, months: list[str] | None = None) -> Cache:
         df["DUID"] = df["DUID"].astype(str)
     stations = pd.read_parquet(data_dir / "stations.parquet") if (data_dir / "stations.parquet").exists() else None
     return Cache(pd.read_parquet(data_dir / "registry.parquet"), stations, scada, dispatch)
+
+
+def load_extra(extra_dir: Path, months: list[str] | None = None) -> dict:
+    """Charge-side and physical availability written by ``fetch-nem`` (see ``bess_ops.mms``)."""
+    out = {}
+    for kind in ("dispatchload", "bids"):
+        files = sorted((Path(extra_dir) / kind).glob("*.parquet"))
+        if months:
+            files = [f for f in files if f.stem in months]
+        if not files:
+            raise FileNotFoundError(f"no {kind} files in {extra_dir}; run: python -m bess_ops fetch-nem")
+        df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+        for c in ("DUID", "DIRECTION"):
+            if c in df:
+                df[c] = df[c].astype(str)
+        out[kind] = df
+    return out
+
+
+def extra_rows(cache: Cache, duid: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if "extra_dispatchload" not in cache.split:
+        for kind in ("dispatchload", "bids"):
+            cache.split[f"extra_{kind}"] = {k: g for k, g in cache.extra[kind].groupby("DUID", sort=False)}
+    dl = cache.split["extra_dispatchload"].get(duid, cache.extra["dispatchload"].iloc[:0])
+    bids = cache.split["extra_bids"].get(duid, cache.extra["bids"].iloc[:0])
+    return dl, bids
+
+
+def technical_frame(cache: Cache, duid: str, index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Offered charge availability and declared physical availability per direction on the unit's UTC grid."""
+    dl, bids = extra_rows(cache, duid)
+
+    def to_grid(times: pd.Series, values: pd.Series) -> np.ndarray:
+        start = (pd.DatetimeIndex(times) - STEP).tz_localize(NEM_TZ).tz_convert("UTC")
+        s = pd.Series(values.to_numpy(float), index=start)
+        return s[~s.index.duplicated()].reindex(index).to_numpy()
+
+    out = pd.DataFrame(index=index)
+    out["p_avail_ch"] = to_grid(dl["SETTLEMENTDATE"], dl["MIN_AVAILABILITY"])
+    for d, name in (("GEN", "dis"), ("LOAD", "ch")):
+        b = bids[bids["DIRECTION"] == d]
+        out[f"pasa_{name}"] = to_grid(b["INTERVAL_DATETIME"], b["PASAAVAILABILITY"])
+        out[f"maxavail_{name}"] = to_grid(b["INTERVAL_DATETIME"], b["MAXAVAIL"])
+    return out
 
 
 def unit_rows(cache: Cache, duid: str) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -109,9 +157,14 @@ def battery_table(cache: Cache) -> pd.DataFrame:
 def registration_daily(cache: Cache, duid: str, days: pd.DatetimeIndex) -> pd.DataFrame:
     """Registered MW and MWh valid on each NEM-time day (the latest version effective on or before it)."""
     reg = cache.registry[cache.registry["DUID"] == duid].sort_values(["EFFECTIVEDATE", "VERSIONNO"])
-    reg = reg.groupby("EFFECTIVEDATE").tail(1).set_index("EFFECTIVEDATE")[["MAXCAPACITY", "MAXSTORAGECAPACITY"]]
+    cols = ["MAXCAPACITY", "MAXSTORAGECAPACITY"] + (["MINCAPACITY"] if "MINCAPACITY" in reg else [])
+    reg = reg.groupby("EFFECTIVEDATE").tail(1).set_index("EFFECTIVEDATE")[cols]
     out = reg.reindex(reg.index.union(days)).sort_index().ffill().reindex(days)
-    return out.rename(columns={"MAXCAPACITY": "mw", "MAXSTORAGECAPACITY": "mwh"}).bfill()
+    out = out.rename(columns={"MAXCAPACITY": "mw", "MAXSTORAGECAPACITY": "mwh", "MINCAPACITY": "mw_ch"}).bfill()
+    if "mw_ch" not in out:
+        out["mw_ch"] = out["mw"]
+    out["mw_ch"] = out["mw_ch"].where(out["mw_ch"] > 0, out["mw"])      # registered charge capacity
+    return out
 
 
 def exact_split(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -195,6 +248,23 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
     g["half"] = g["ratio"] >= 0.5
     g["soc_ok"] = g["soc"] > 0.10
     g["zero_soc_ok"] = (g["avail"] <= 0.01 * g["mw"]) & g["soc_ok"]
+    tech = cache.extra is not None
+    if tech:
+        t = technical_frame(cache, duid, site.index)
+        mw_ch = reg["mw_ch"].reindex(days).to_numpy()
+        g["ratio_ch"] = (t["p_avail_ch"].to_numpy() / mw_ch).clip(max=1.0)
+        g["pasa_dis"] = (t["pasa_dis"].to_numpy() / g["mw"]).clip(upper=1.0)
+        g["pasa_ch"] = (t["pasa_ch"].to_numpy() / mw_ch).clip(max=1.0)
+        g["pasa_both"] = g[["pasa_dis", "pasa_ch"]].min(axis=1, skipna=False)
+        # an empty battery cannot discharge and a full one cannot charge: an LTSA does not count that as an
+        # outage, so near the SoC limits only the other direction counts
+        soc_rep = g["soc"].to_numpy()
+        g["pasa_adj"] = np.where(soc_rep <= 0.10, g["pasa_ch"],
+                                 np.where(soc_rep >= 0.90, g["pasa_dis"], g["pasa_both"]))
+        g.loc[np.isnan(soc_rep), "pasa_adj"] = g["pasa_both"]
+        g["pasa_full"] = (g["pasa_adj"] >= 0.95 - 1e-9).where(g["pasa_adj"].notna())
+        g["pasa_out"] = (g["pasa_adj"] <= 0.05).where(g["pasa_adj"].notna())
+        g["withheld"] = (g["pasa_dis"] - g["ratio"]).clip(lower=0)
     by = g.groupby("m")
     monthly = pd.DataFrame({
         "mw": by["mw"].median(), "mwh": by["mwh"].median(),
@@ -210,6 +280,16 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
         "soc_below_5": (g["soc"] <= 0.05).groupby(g["m"]).mean(),
         "mean_soc": by["soc"].mean(),
     })
+    if tech:
+        monthly["availability_charge_offered"] = by["ratio_ch"].mean()
+        monthly["availability_technical_dis"] = by["pasa_dis"].mean()
+        monthly["availability_technical_ch"] = by["pasa_ch"].mean()
+        monthly["availability_technical_both"] = by["pasa_both"].mean()
+        monthly["availability_technical"] = by["pasa_adj"].mean()
+        monthly["availability_technical_time"] = by["pasa_full"].mean()
+        monthly["technical_outage_hours"] = by["pasa_out"].sum() * DT_H
+        monthly["withheld_share"] = by["withheld"].mean()
+        monthly["technical_coverage"] = by["pasa_both"].count() / by.size()
     monthly["efc"] = monthly["e_out_mwh"] / monthly["mwh"]
     monthly["e_window_share"] = (monthly["e_p995_mwh"] - monthly["e_p005_mwh"]) / monthly["mwh"]
     rf = []
@@ -258,6 +338,20 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
             "mean_soc": _weighted(op, "mean_soc"),
             "e_max_share": float(op["e_p995_mwh"].max() / op["mwh"].iloc[-1]),
         })
+        if tech:
+            # in service: from the first operational month with at least 80 % declared (commissioning before)
+            served = op["availability_technical"] >= 0.8
+            ts = op.loc[served.idxmax():] if served.any() else op
+            summary.update({c: _weighted(ts, c) for c in (
+                "availability_charge_offered", "availability_technical_dis", "availability_technical_ch",
+                "availability_technical_both", "availability_technical", "availability_technical_time",
+                "withheld_share")})
+            summary["technical_outage_hours_per_year"] = float(ts["technical_outage_hours"].sum()
+                                                               / ts["days"].sum() * 365.25)
+            summary["in_service_from"] = ts.index[0] if served.any() else None
+            summary["in_service_months"] = int(len(ts)) if served.any() else 0
+            summary["availability_offered_in_service"] = _weighted(ts, "availability_capacity")
+            summary["availability_offered_soc_ok_in_service"] = _weighted(ts, "availability_capacity_soc_ok")
         summary.update(window_trend(op))
     return monthly, summary, vd["rte"].rename(duid)
 
