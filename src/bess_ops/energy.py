@@ -24,75 +24,31 @@ Usage:
     daily = window_rte(site, site_cfg, "D")
     monthly = window_rte(site, site_cfg, "M")
     balance = energy_balance(site, site_cfg, "M")
+
+The interval flows, the window labels, the corrected RTE and the automatic one-way efficiency are those of the
+res-asset-kpi library (``res_asset_kpi.bess``); the windows are summed here so that the NEM and ACEN studies can pass
+their own flows (exact metered energy, a stored energy cleaned of BMS jumps).
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from res_asset_kpi import bess
+from res_asset_kpi.bess import auto_eta, corrected_rte  # noqa: F401
 
-from bess_ops.schema import stored_energy
+_FREQ = {"LY": "CY"}  # LTSA years are the library's contract years
 
 
 def window_keys(index: pd.DatetimeIndex, timezone: str, freq: str, cod: pd.Timestamp | None = None) -> pd.Series:
     """Label of the window every interval belongs to: D (local day), M (month), Y (year), LY (LTSA year from COD)."""
-    loc = index.tz_convert(timezone)
-    if freq in ("D", "M", "Y"):
-        y, m, d = loc.year.to_numpy(), loc.month.to_numpy(), loc.day.to_numpy()
-        code = {"D": y * 10000 + m * 100 + d, "M": y * 100 + m, "Y": y}[freq]
-        uniq, inv = np.unique(code, return_inverse=True)
-        fmt = {"D": lambda c: f"{c // 10000:04d}-{c // 100 % 100:02d}-{c % 100:02d}",
-               "M": lambda c: f"{c // 100:04d}-{c % 100:02d}", "Y": lambda c: f"{c:04d}"}[freq]
-        keys = np.array([fmt(int(c)) for c in uniq], dtype=object)[inv]
-    elif freq == "LY":
-        if cod is None:
-            raise ValueError("LTSA years need the commercial operation date (site.cod)")
-        keys = pd.Index(contract_year(loc, cod)).astype(str)
-    else:
-        raise ValueError(f"unknown window {freq!r}")
-    return pd.Series(np.asarray(keys), index=index)
-
-
-def contract_year(local: pd.DatetimeIndex, cod: pd.Timestamp) -> np.ndarray:
-    """1-based contract year of each local timestamp (year 1 starts at COD, local midnight)."""
-    cod = pd.Timestamp(cod)
-    if cod.tz is None:
-        cod = cod.tz_localize(local.tz)
-    years = np.zeros(len(local), dtype=int)
-    k = 0
-    while True:
-        lo = cod + pd.DateOffset(years=k)
-        if lo > local.max():
-            break
-        hi = cod + pd.DateOffset(years=k + 1)
-        years[(local >= lo) & (local < hi)] = k + 1
-        k += 1
-    return years
+    if freq == "LY" and cod is None:
+        raise ValueError("LTSA years need the commercial operation date (site.cod)")
+    return bess.window_keys(index, _FREQ.get(freq, freq), timezone, cod)
 
 
 def interval_flows(site: pd.DataFrame, site_cfg: dict) -> pd.DataFrame:
     """Energy per interval (MWh): meter out/in, PCS out/in (auxiliaries removed), auxiliaries, DC; stored energy."""
-    dt = site.attrs["dt_h"]
-    p = site["p_meter"]
-    out = pd.DataFrame(index=site.index)
-    out["e_out"] = p.clip(lower=0) * dt
-    out["e_in"] = (-p).clip(lower=0) * dt
-    aux = site.get("p_aux")
-    mode = site_cfg["aux_metering"]
-    out["e_aux"] = aux * dt if aux is not None else np.nan
-    if aux is not None and mode == "behind_meter":
-        pcs = p + aux
-    elif mode == "separate":
-        pcs = p
-    else:
-        pcs = None
-    out["e_out_pcs"] = pcs.clip(lower=0) * dt if pcs is not None else np.nan
-    out["e_in_pcs"] = (-pcs).clip(lower=0) * dt if pcs is not None else np.nan
-    if "p_dc" in site:
-        out["e_dc_dis"] = site["p_dc"].clip(lower=0) * dt
-        out["e_dc_ch"] = (-site["p_dc"]).clip(lower=0) * dt
-    e = stored_energy(site, site_cfg["soc_energy_mwh"])
-    out["stored"] = e if e is not None else np.nan
-    return out
+    return bess.interval_flows(site, site_cfg["aux_metering"], site_cfg["soc_energy_mwh"])
 
 
 def _state_at(e: pd.Series, pos: np.ndarray, tolerance: int = 2) -> np.ndarray:
@@ -140,32 +96,6 @@ def window_sums(flows: pd.DataFrame, keys: pd.Series) -> pd.DataFrame:
     return sums
 
 
-def corrected_rte(e_out, e_in, d_e, eta) -> np.ndarray:
-    """RTE corrected for the change of stored energy ``d_e`` (see module docstring)."""
-    e_out, e_in, d_e = (np.asarray(x, float) for x in (e_out, e_in, d_e))
-    d = np.nan_to_num(d_e)
-    gain = d > 0
-    num = e_out + np.where(gain, eta * d, 0.0)
-    den = e_in + np.where(gain, 0.0, -d / eta)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        r = np.where(den > 0, num / den, np.nan)
-    return np.where(np.isnan(d_e), np.nan, r)
-
-
-def auto_eta(e_out: float, e_in: float, d_e: float, iterations: int = 50) -> float:
-    """One-way efficiency ``sqrt(RTE)`` consistent with the corrected RTE of the whole record."""
-    eta = 0.95
-    for _ in range(iterations):
-        r = float(corrected_rte(e_out, e_in, d_e, eta))
-        if not np.isfinite(r) or r <= 0:
-            return 0.95
-        eta = min(np.sqrt(r), 1.0)
-    return eta
-
-
-MIN_EFC = {"D": 0.3, "M": 5.0, "Y": 50.0, "LY": 50.0}
-
-
 def window_rte(site: pd.DataFrame, site_cfg: dict, freq: str, eta: float | str = "auto",
                flows: pd.DataFrame | None = None, min_efc: float | None = None,
                min_coverage: float = 0.95) -> pd.DataFrame:
@@ -201,7 +131,7 @@ def window_rte(site: pd.DataFrame, site_cfg: dict, freq: str, eta: float | str =
     basis = s["e_in_pcs"] if have_pcs else s["e_in"]
     s["efc"] = basis / site_cfg["soc_energy_mwh"]
     s["eta"] = eta
-    need = MIN_EFC.get(freq, 0.0) if min_efc is None else min_efc
+    need = bess.MIN_EFC.get(_FREQ.get(freq, freq), 0.0) if min_efc is None else min_efc
     s["valid"] = (s["efc"] >= need) & (s["coverage"] >= min_coverage) & s["d_stored"].notna()
     return s
 

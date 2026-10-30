@@ -9,7 +9,8 @@ contracts and must be read from the actual LTSA or warranty.
                   LD = E_out x (1 / RTE - 1 / RTE_guaranteed) x price     (extra energy bought to deliver E_out)
     capacity      LD = rate_per_mwh x max(0, E_guaranteed - E_corrected)  (per failed test)
 
-The total per LTSA year is limited to ``cap_share_of_fee`` x ``annual_fee`` when both are set.
+The total per LTSA year is limited to ``cap_share_of_fee`` x ``annual_fee`` when both are set. The amounts are
+computed by the res-asset-kpi library (``res_asset_kpi.contracts.damages_amount``).
 
 Usage:
     ld = liquidated_damages(availability_periods, rte_windows, tests, ltsa)
@@ -19,13 +20,16 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from res_asset_kpi.contracts import Damages, damages_amount
 
 
 def availability_ld(periods: pd.DataFrame, ltsa: dict) -> pd.DataFrame:
     cfg = ltsa["ld"]["availability"]
     g = ltsa["availability"]["guaranteed"]
     short = ((g - periods["availability"]).clip(lower=0) * 100).fillna(0)
-    amount = cfg["rate_per_pp"] * short * (ltsa["contract"]["power_mw"] if cfg["per_mw"] else 1.0)
+    d = Damages(method="per_point", rate_per_pp=cfg["rate_per_pp"],
+                multiplier=ltsa["contract"]["power_mw"] if cfg["per_mw"] else 1.0)
+    amount = pd.Series(np.nan_to_num(damages_amount(d, periods["availability"], g)), index=periods.index)
     return pd.DataFrame({"kind": "availability", "period": periods.index.astype(str), "measured":
                          periods["availability"].to_numpy(), "guaranteed": g, "shortfall": short.to_numpy() / 100,
                          "amount": amount.to_numpy()})
@@ -40,11 +44,10 @@ def rte_ld(windows: pd.DataFrame, ltsa: dict) -> pd.DataFrame:
     rte = assessed[col]
     short = (g - rte).clip(lower=0).fillna(0)
     if cfg["method"] == "energy_cost":
-        with np.errstate(divide="ignore", invalid="ignore"):
-            extra = assessed["e_out"] * (1 / rte - 1 / g)
-        amount = extra.where(rte < g, 0.0).fillna(0) * cfg["price_per_mwh"]
+        d = Damages(method="rte_energy_cost", price_per_mwh=cfg["price_per_mwh"])
     else:
-        amount = cfg["rate_per_pp"] * short * 100
+        d = Damages(method="per_point", rate_per_pp=cfg["rate_per_pp"])
+    amount = pd.Series(np.nan_to_num(damages_amount(d, rte, g, e_out_mwh=assessed["e_out"])), index=rte.index)
     return pd.DataFrame({"kind": "rte", "period": assessed.index.astype(str), "measured": rte.to_numpy(),
                          "guaranteed": g, "shortfall": short.to_numpy(), "amount": amount.to_numpy()})
 
@@ -55,9 +58,11 @@ def capacity_ld(tests: pd.DataFrame, ltsa: dict) -> pd.DataFrame:
         return pd.DataFrame(columns=["kind", "period", "measured", "guaranteed", "shortfall", "amount"])
     failed = tests["verdict"] == "fail"
     short = (tests["e_guaranteed_mwh"] - tests["e_corr_mwh"]).clip(lower=0).where(failed, 0.0)
+    amount = damages_amount(Damages(method="per_mwh", rate_per_mwh=cfg["rate_per_mwh"]), tests["e_corr_mwh"],
+                            tests["e_guaranteed_mwh"])
     return pd.DataFrame({"kind": "capacity", "period": tests["start"].astype(str),
                          "measured": tests["e_corr_mwh"].to_numpy(), "guaranteed": tests["e_guaranteed_mwh"].to_numpy(),
-                         "shortfall": short.to_numpy(), "amount": (cfg["rate_per_mwh"] * short).to_numpy()})
+                         "shortfall": short.to_numpy(), "amount": np.where(failed, amount, 0.0)})
 
 
 def liquidated_damages(periods: pd.DataFrame | None, windows: pd.DataFrame | None, tests: pd.DataFrame | None,

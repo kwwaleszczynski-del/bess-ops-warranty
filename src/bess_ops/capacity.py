@@ -26,6 +26,9 @@ N(t) at the recent cycling rate and returns when SoH crosses the energy requirem
 the cheapest response is (augmentation, overbuild, operating limits) is the subject of that project; this one hands
 over the measured starting point and fade rates (``handoff``).
 
+The temperature correction, the uncertainty budget and the verdict of each test are computed by the res-asset-kpi
+library (``res_asset_kpi.bess``).
+
 Usage:
     tests = evaluate_tests(site, windows, ltsa, warranty, site_cfg)
     fc = forecast_soh(tests, ltsa, warranty, site_cfg, efc_per_year=330, cell_temp_c=26)
@@ -36,6 +39,7 @@ import logging
 
 import numpy as np
 import pandas as pd
+from res_asset_kpi import bess
 
 from bess_ops.config import retention_at
 from bess_ops.cycles import throughput_energy
@@ -87,13 +91,10 @@ def _discharge_run(p: np.ndarray, lo: int, hi: int, eps: float) -> tuple[int, in
 
 def relative_uncertainty(t: dict, temp_c: float) -> dict:
     """Relative standard uncertainties of one test and their combination."""
-    u = {"meter": t["meter_class_pct"] / 100 / np.sqrt(3), "ct": t["ct_pct"] / 100 / np.sqrt(3),
-         "vt": t["vt_pct"] / 100 / np.sqrt(3),
-         "temperature": np.hypot(t["temp_coeff_per_k"] * t["temp_u_k"],
-                                 t["temp_coeff_u_per_k"] * abs(temp_c - t["t_ref_c"])) if np.isfinite(temp_c)
-         else 0.0}
-    u["combined"] = float(np.sqrt(sum(v ** 2 for v in u.values())))
-    return u
+    u = bess.relative_uncertainty(meter_class_pct=t["meter_class_pct"], ct_pct=t["ct_pct"], vt_pct=t["vt_pct"],
+                                  temp_c=temp_c, t_ref_c=t["t_ref_c"], temp_coeff_per_k=t["temp_coeff_per_k"],
+                                  temp_coeff_u_per_k=t["temp_coeff_u_per_k"], temp_u_k=t["temp_u_k"])
+    return {"meter": u.meter, "ct": u.ct, "vt": u.vt, "temperature": u.temperature, "combined": u.combined}
 
 
 def guaranteed_energy(ltsa: dict, warranty: dict, elapsed_years, efc_total) -> np.ndarray:
@@ -141,11 +142,6 @@ def evaluate_tests(site: pd.DataFrame, windows: pd.DataFrame, ltsa: dict, warran
         temp_col = t["temp_signal"] if t["temp_signal"] in site else next(
             (c for c in ("t_cell_avg", "t_cell_max", "t_amb") if c in site), None)
         temp = float(np.nanmean(site[temp_col].to_numpy()[seg])) if temp_col else np.nan
-        alpha = t["temp_coeff_per_k"]
-        factor = 1 + alpha * (temp - t["t_ref_c"]) if np.isfinite(temp) else 1.0
-        e_corr = e_meas / factor
-        u = relative_uncertainty(t, temp)
-        big_u = t["coverage_k"] * u["combined"] * e_corr
         soc = site["soc"].to_numpy(float) if "soc" in site else None
         soc_start = float(soc[lo]) if soc is not None else np.nan
         soc_end = float(soc[hi + 1]) if soc is not None and hi + 1 < len(soc) else np.nan
@@ -153,10 +149,11 @@ def evaluate_tests(site: pd.DataFrame, windows: pd.DataFrame, ltsa: dict, warran
         elapsed = (start_local - cod_ts) / pd.Timedelta(days=365.25)
         efc = float(cum_efc[lo - 1]) if lo > 0 else 0.0
         e_g = float(guaranteed_energy(ltsa, warranty, elapsed, efc))
-        if t["decision_rule"] == "guard_band":
-            verdict = "pass" if e_corr - big_u >= e_g else ("fail" if e_corr + big_u < e_g else "inconclusive")
-        else:
-            verdict = "pass" if e_corr >= e_g else "fail"
+        r = bess.evaluate_capacity_test(e_meas, e_g, temp_c=temp, t_ref_c=t["t_ref_c"],
+                                        temp_coeff_per_k=t["temp_coeff_per_k"],
+                                        temp_coeff_u_per_k=t["temp_coeff_u_per_k"], temp_u_k=t["temp_u_k"],
+                                        meter_class_pct=t["meter_class_pct"], ct_pct=t["ct_pct"], vt_pct=t["vt_pct"],
+                                        coverage_k=t["coverage_k"], decision_rule=t["decision_rule"])
         checks = []
         if np.isfinite(soc_start) and soc_start < t["start_soc_min"]:
             checks.append(f"start SoC {soc_start:.1%} < {t['start_soc_min']:.0%}")
@@ -164,11 +161,11 @@ def evaluate_tests(site: pd.DataFrame, windows: pd.DataFrame, ltsa: dict, warran
             checks.append(f"end SoC {soc_end:.1%} > {t['end_soc_max']:.0%}")
         rows.append({"start": site.index[lo], "end": site.index[hi] + pd.Timedelta(hours=dt),
                      "duration_h": (hi - lo + 1) * dt, "mean_power_mw": e_meas / ((hi - lo + 1) * dt),
-                     "temp_c": temp, "e_meas_mwh": e_meas, "temp_factor": factor, "e_corr_mwh": e_corr,
-                     "u_rel_combined": u["combined"], "U_mwh": big_u, "soc_start": soc_start, "soc_end": soc_end,
-                     "elapsed_years": elapsed, "efc_total": efc, "soh": e_corr / e_ref,
-                     "e_guaranteed_mwh": e_g, "soh_guaranteed": e_g / e_ref, "margin_mwh": e_corr - e_g,
-                     "verdict": verdict, "procedure_checks": "; ".join(checks)})
+                     "temp_c": temp, "e_meas_mwh": e_meas, "temp_factor": r.temp_factor,
+                     "e_corr_mwh": r.e_corrected, "u_rel_combined": r.u_rel_combined, "U_mwh": r.expanded_uncertainty,
+                     "soc_start": soc_start, "soc_end": soc_end, "elapsed_years": elapsed, "efc_total": efc,
+                     "soh": r.e_corrected / e_ref, "e_guaranteed_mwh": e_g, "soh_guaranteed": e_g / e_ref,
+                     "margin_mwh": r.margin, "verdict": r.verdict, "procedure_checks": "; ".join(checks)})
     return pd.DataFrame(rows)
 
 

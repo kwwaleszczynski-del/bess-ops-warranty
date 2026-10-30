@@ -93,7 +93,7 @@ def monthly_kpis(site, site_cfg, warranty, ltsa, monthly_rte, avail_m, violation
 
 def analyse(site: pd.DataFrame, site_cfg: dict, warranty: dict, ltsa: dict,
             events: pd.DataFrame | None = None) -> dict:
-    res: dict = {"site_cfg": site_cfg, "warranty": warranty, "ltsa": ltsa}
+    res: dict = {"site_cfg": site_cfg, "warranty": warranty, "ltsa": ltsa, "events": events}
     res["quality"] = data_quality(site, site_cfg["soc_energy_mwh"])
     eta = ltsa["rte"]["one_way_efficiency"]
     flows = interval_flows(site, site_cfg)
@@ -108,8 +108,8 @@ def analyse(site: pd.DataFrame, site_cfg: dict, warranty: dict, ltsa: dict,
     if {"p_avail_dis", "p_avail_ch"} & set(site.columns):
         iv = av.interval_availability(site, ltsa, events)
         res["availability_interval"] = iv
-        res["availability_month"] = av.period_availability(iv, ltsa, site_cfg, "month")
-        res["availability_year"] = av.period_availability(iv, ltsa, site_cfg, "year")
+        res["availability_month"] = av.period_availability(iv, ltsa, site_cfg, "month", events)
+        res["availability_year"] = av.period_availability(iv, ltsa, site_cfg, "year", events)
     else:
         log.info("availability skipped: no available-power signals")
         res["availability_month"] = res["availability_year"] = None
@@ -143,7 +143,7 @@ def state_at(res: dict, end: pd.Timestamp | None) -> dict:
     out = {"warranty_status": warranty_status(upto, warranty, site_cfg)}
     iv = res.get("availability_interval")
     out["availability_year"] = None if iv is None else av.period_availability(
-        iv if end is None else iv[iv.index < end], ltsa, site_cfg, "year")
+        iv if end is None else iv[iv.index < end], ltsa, site_cfg, "year", res["events"])
     tests = res["tests"]
     if end is not None and len(tests):
         tests = tests[pd.DatetimeIndex(tests["end"]) <= end]

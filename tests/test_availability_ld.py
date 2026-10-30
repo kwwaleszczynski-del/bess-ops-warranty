@@ -34,7 +34,7 @@ EV = [("2025-06-02 02:00", "2025-06-02 03:00", "tso_instruction"),     # hour 2:
 
 def availability(site, lt, ev=None):
     iv = interval_availability(site, lt, ev)
-    return period_availability(iv, lt, SITE).iloc[0]
+    return period_availability(iv, lt, SITE, events=ev).iloc[0]
 
 
 def test_time_formula():

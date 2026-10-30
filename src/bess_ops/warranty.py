@@ -28,10 +28,10 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from res_asset_kpi import contracts, timeseries
 
 from bess_ops.config import retention_at
 from bess_ops.cycles import throughput_energy
-from bess_ops.energy import contract_year
 
 COLUMNS = ["rule", "start", "end", "duration_h", "value", "limit", "unit", "detail"]
 
@@ -64,7 +64,7 @@ def warranty_years(site: pd.DataFrame, site_cfg: dict) -> np.ndarray:
     loc = site.index.tz_convert(site_cfg["timezone"])
     if cod is None:
         cod = loc[0].normalize().tz_localize(None)
-    return contract_year(loc, cod)
+    return timeseries.contract_years(site.index, cod, site_cfg["timezone"])
 
 
 def detect_violations(site: pd.DataFrame, warranty: dict, site_cfg: dict) -> pd.DataFrame:
@@ -177,9 +177,5 @@ def warranty_status(site: pd.DataFrame, warranty: dict, site_cfg: dict) -> dict:
 
 def guaranteed_soh(retention: dict, elapsed_years, efc_total, efc_per_year) -> np.ndarray:
     """Guaranteed SoH at a test: read at the equivalent age max(years, EFC / allowance) if the warranty says so."""
-    elapsed = np.asarray(elapsed_years, float)
-    if retention["equivalent_age"] and efc_per_year:
-        age = np.maximum(elapsed, np.asarray(efc_total, float) / efc_per_year)
-    else:
-        age = elapsed
-    return retention_at(retention, age)
+    efc = efc_total if retention["equivalent_age"] else None
+    return contracts.guaranteed_retention(retention["years"], retention["soh"], elapsed_years, efc, efc_per_year)

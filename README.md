@@ -164,6 +164,11 @@ metering point from the source of the stored energy:
 
 ## Method
 
+The interval flows, the SoC-corrected RTE, the LTSA availability, rainflow and throughput, the capacity
+test evaluation, the guaranteed retention and the damages are computed by
+[res-asset-kpi](https://github.com/kwwaleszczynski-del/res-asset-kpi) (`res_asset_kpi.bess`,
+`res_asset_kpi.contracts`), the KPI library extracted from this and five related projects.
+
 ### Energy and round-trip efficiency
 
 Metered power `P` (+ export) gives, per interval of `dt` hours, energy out `max(P, 0) dt` and in `max(-P, 0) dt`.
@@ -381,9 +386,9 @@ src/bess_ops/
   config.py        site, warranty and LTSA YAML with defaults
   energy.py        windows, energy balance, SoC-corrected RTE, BMS jumps, inverted reports
   auxiliaries.py   auxiliary consumption against ambient temperature
-  availability.py  LTSA availability formulas and event treatments
+  availability.py  LTSA availability from the configuration (formulas in res-asset-kpi)
   ld.py            illustrative liquidated damages
-  cycles.py        throughput, equivalent full cycles, rainflow
+  cycles.py        throughput basis of the warranty (rainflow in res-asset-kpi)
   warranty.py      warranty conditions and their violations, warranty status
   capacity.py      capacity tests, uncertainty, fade fit and forecast, hand-over to bess-capacity-augmentation
   pipeline.py      all estimators on one site, state at a month end
