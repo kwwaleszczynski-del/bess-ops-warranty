@@ -104,7 +104,7 @@ def _labels(s: pd.DataFrame) -> list[str]:
 
 def chart_fleet_rte(summary: pd.DataFrame, path: Path):
     s = summary[summary["valid_days"] >= 30].dropna(subset=["rte_daily_median"]).sort_values("rte_daily_median")
-    fig, ax = plt.subplots(figsize=(9, max(4, 0.22 * len(s))))
+    fig, ax = plt.subplots(figsize=(9.5, max(4, 0.26 * len(s))))
     y = np.arange(len(s))
     col = [REGION_COLORS.get(r, "#888") for r in s["region"]]
     ax.hlines(y, s["rte_daily_p25"], s["rte_daily_p75"], color=col, lw=4, alpha=0.5)
@@ -116,10 +116,10 @@ def chart_fleet_rte(summary: pd.DataFrame, path: Path):
     reg = s["rte_registered"].where(s["rte_registered"] < 0.999)
     ax.scatter(reg, y, marker="o", facecolors="none", edgecolors="#999", s=18,
                label="registered efficiency factors (where below 1)")
-    ax.set_yticks(y, _labels(s), fontsize=7)
+    ax.set_yticks(y, _labels(s), fontsize=8.5)
     ax.set_xlim(0.4, 1.0)
     ax.set_xlabel("round-trip efficiency at the SCADA point")
-    ax.legend(fontsize=7, loc="lower right")
+    ax.legend(fontsize=8.5, loc="upper left")  # the best batteries sit right, the space to their left is empty
     ax.grid(axis="x", alpha=0.3)
     ax.set_title("NEM batteries: round-trip efficiency at AEMO's SCADA point (Oct 2025 - Sep 2026)", fontsize=10)
     _save(fig, path)
@@ -161,9 +161,10 @@ def chart_acen(results: Path, path: Path):
     ax.plot(x, d["rte_operator"], "o-", ms=3, color="#1baf7a", label="A: operator power + operator SoC")
     ax.plot(x, d["rte_scada_operator_soc"], "s-", ms=3, color="#2a78d6", label="B: AEMO SCADA + operator SoC")
     ax.plot(x, d["rte_market"], "^-", ms=3, color="#eb6834", label="C: AEMO SCADA + energy reported to AEMO")
-    ax.set_ylim(0.6, 1.0)
+    low = d[["rte_operator", "rte_scada_operator_soc", "rte_market"]].min().min()
+    ax.set_ylim(min(0.6, np.floor((low - 0.02) * 20) / 20), 1.0)  # every point inside the axes
     ax.set_ylabel("daily RTE")
-    ax.legend(fontsize=7, ncol=3, loc="lower center")
+    ax.legend(fontsize=8.5, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.32), frameon=False)
     ax.grid(alpha=0.3)
     ax.set_title("New England BESS, section 1: daily RTE from the operator's and from market data", fontsize=10)
     fig.autofmt_xdate()
@@ -183,7 +184,7 @@ def chart_synthetic(res: dict, results: Path, path: Path):
     ax.axvline(0.975 ** 2 * 0.98 ** 2, color="k", ls="--", lw=1, label="truth 0.913")
     ax.set_xlabel("daily RTE without auxiliaries")
     ax.set_ylabel("days")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=8.5)
     ax.set_title("Synthetic battery: daily RTE", fontsize=10)
     ax = axes[1]
     ax.fill_between(fc["years"], fc["soh_p10"], fc["soh_p90"], color="#2a78d6", alpha=0.2, label="forecast P10-P90")
@@ -197,7 +198,7 @@ def chart_synthetic(res: dict, results: Path, path: Path):
     ax.set_ylim(0.8, 1.03)
     ax.set_xlabel("years since COD")
     ax.set_ylabel("tested energy / 100 MWh")
-    ax.legend(fontsize=6, ncol=2)
+    ax.legend(fontsize=8, loc="lower left")  # the curves leave the lower left empty
     ax.set_title("Capacity tests and SoH forecast", fontsize=10)
     _save(fig, path)
 
