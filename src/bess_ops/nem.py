@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 
 from bess_ops.cycles import rainflow
-from bess_ops.energy import interval_flows, state_jumps, window_keys, window_rte
+from bess_ops.energy import interval_flows, inverted_days, state_jumps, window_keys, window_rte
 from bess_ops.schema import site_frame
 
 log = logging.getLogger(__name__)
@@ -233,6 +233,14 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
     checks = pd.DataFrame(checks).T
     consistent = (checks["a"] > 0.5) & (checks["b"] > 0.5) & (checks["r2"] >= 0.95)
     stored_ok = pd.Series(consistent.reindex(mk).to_numpy(), index=site.index).fillna(False).astype(bool)
+    # a month can pass while some of its days report the headroom (New England, 1-5 August 2026): days whose hourly
+    # state change runs against the metered charge are left out as well
+    dk = window_keys(site.index, NEM_TZ, "D").to_numpy()
+    corr = inverted_days(site["e_stored"], flows["e_in"], flows["e_out"], NEM_TZ)
+    bad_days = set(corr.index[corr < -0.5])
+    stored_ok &= ~pd.Series(dk, index=site.index).isin(bad_days)
+    checks["inverted_days"] = pd.Series([d[:7] for d in bad_days], dtype=object).value_counts() \
+        .reindex(checks.index).fillna(0).astype(int)
     flows_c = flows.copy()
     flows_c["stored"] = adjusted.where(stored_ok)
     soc = adjusted / mwh
@@ -241,8 +249,9 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
     eta = float(mrte["eta"].iloc[0])
     drte = window_rte(site, cfg, "D", eta, flows_c)
 
+    # the state of charge (reported energy / registered MWh) is only used where the report passed the checks
     g = pd.DataFrame({"m": mk, "mw": mw.to_numpy(), "mwh": mwh.to_numpy(), "avail": site["p_avail_dis"].to_numpy(),
-                      "soc": (site["e_stored"] / mwh).to_numpy(), "e": site["e_stored"].to_numpy()})
+                      "soc": (site["e_stored"] / mwh).where(stored_ok).to_numpy(), "e": site["e_stored"].to_numpy()})
     g["ratio"] = (g["avail"] / g["mw"]).clip(upper=1.0)
     g["full"] = g["ratio"] >= 0.95 - 1e-9
     g["half"] = g["ratio"] >= 0.5
@@ -264,13 +273,18 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
         g.loc[np.isnan(soc_rep), "pasa_adj"] = g["pasa_both"]
         g["pasa_full"] = (g["pasa_adj"] >= 0.95 - 1e-9).where(g["pasa_adj"].notna())
         g["pasa_out"] = (g["pasa_adj"] <= 0.05).where(g["pasa_adj"].notna())
-        g["withheld"] = (g["pasa_dis"] - g["ratio"]).clip(lower=0)
+        # declared physically available but not offered: only with energy in store, as an empty battery offers
+        # less for a reason that is not commercial
+        gap = g["pasa_dis"] - g["ratio"]
+        g["withheld_all"] = gap.clip(lower=0)
+        g["withheld"] = gap.clip(lower=0).where(g["soc_ok"])
     by = g.groupby("m")
     monthly = pd.DataFrame({
         "mw": by["mw"].median(), "mwh": by["mwh"].median(),
         "e_out_mwh": mrte["e_out"], "e_in_mwh": mrte["e_in"], "d_stored_mwh": mrte["d_stored"],
         "rte_raw": mrte["rte_raw"], "rte": mrte["rte"].where(consistent.reindex(mrte.index).fillna(False)),
         "stored_r2": checks["r2"], "stored_jumps": checks["jumps"], "stored_consistent": consistent,
+        "inverted_days": checks["inverted_days"],
         "availability_capacity": by["ratio"].mean(), "availability_time": by["full"].mean(),
         "offered_half_share": by["half"].mean(),
         "availability_capacity_soc_ok": g[g["soc_ok"]].groupby("m")["ratio"].mean(),
@@ -289,6 +303,7 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
         monthly["availability_technical_time"] = by["pasa_full"].mean()
         monthly["technical_outage_hours"] = by["pasa_out"].sum() * DT_H
         monthly["withheld_share"] = by["withheld"].mean()
+        monthly["withheld_share_all_intervals"] = by["withheld_all"].mean()
         monthly["technical_coverage"] = by["pasa_both"].count() / by.size()
     monthly["efc"] = monthly["e_out_mwh"] / monthly["mwh"]
     monthly["e_window_share"] = (monthly["e_p995_mwh"] - monthly["e_p005_mwh"]) / monthly["mwh"]
@@ -314,12 +329,21 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
     summary = {"duid": duid, "months": len(monthly), "operational_months": len(op)}
     if len(op):
         days_op = op["days"].sum()
+        # cycles are annualised over calendar time from the first operational month (idle months included)
+        cal = monthly.loc[op.index[0]:]
+        efc_year = float(cal["efc"].sum() / cal["days"].sum() * 365.25)
+        stored_cons = site["e_stored"].where(stored_ok)[mk >= op.index[0]]
+        window = float(stored_cons.quantile(0.995) - stored_cons.quantile(0.005)) if stored_cons.notna().any() \
+            else np.nan
         summary.update({
             "mw": float(op["mw"].iloc[-1]), "mwh": float(op["mwh"].iloc[-1]),
             "first_month": op.index[0], "last_month": op.index[-1],
-            "efc_per_year": float(op["efc"].sum() / days_op * 365.25),
-            "rainflow_efc_per_year": float(op["rainflow_efc"].sum() / op.loc[op["rainflow_efc"].notna(), "days"].sum()
-                                           * 365.25) if op["rainflow_efc"].notna().any() else np.nan,
+            "efc_per_year": efc_year,
+            "efc_per_year_operational_months": float(op["efc"].sum() / days_op * 365.25),
+            "usable_window_mwh": window,
+            "efc_per_year_window": efc_year * float(op["mwh"].iloc[-1]) / window if window > 0 else np.nan,
+            "rainflow_efc_per_year": float(cal["rainflow_efc"].sum() / cal.loc[cal["rainflow_efc"].notna(), "days"]
+                                           .sum() * 365.25) if cal["rainflow_efc"].notna().any() else np.nan,
             "deep_cycle_share": float((op["deep_cycle_share"] * op["rainflow_efc"]).sum() / op["rainflow_efc"].sum())
             if op["rainflow_efc"].sum() > 0 else np.nan,
             "rte_raw": float(op["e_out_mwh"].sum() / op["e_in_mwh"].sum()),
@@ -345,7 +369,7 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
             summary.update({c: _weighted(ts, c) for c in (
                 "availability_charge_offered", "availability_technical_dis", "availability_technical_ch",
                 "availability_technical_both", "availability_technical", "availability_technical_time",
-                "withheld_share")})
+                "withheld_share", "withheld_share_all_intervals")})
             summary["technical_outage_hours_per_year"] = float(ts["technical_outage_hours"].sum()
                                                                / ts["days"].sum() * 365.25)
             summary["in_service_from"] = ts.index[0] if served.any() else None

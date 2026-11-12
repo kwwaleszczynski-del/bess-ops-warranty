@@ -157,6 +157,10 @@ def validate(cache: Cache, acen_dir: Path) -> dict:
             "daily_rte_median_A_operator": float(both["rte_operator"].median()) if has else np.nan,
             "daily_rte_median_B_scada_operator_soc": float(both["rte_scada_operator_soc"].median()) if has else np.nan,
             "daily_rte_median_C_market": float(both["rte_market"].median()) if has else np.nan,
+            "daily_rte_std_A": float(both["rte_operator"].std()) if has else np.nan,
+            "daily_rte_std_B": float(both["rte_scada_operator_soc"].std()) if has else np.nan,
+            "daily_rte_std_C": float(both["rte_market"].std()) if has else np.nan,
+            "daily_corr_B_C": float(both["rte_scada_operator_soc"].corr(both["rte_market"])) if has else np.nan,
             "daily_mean_abs_diff_B_C": float((both["rte_market"] - both["rte_scada_operator_soc"]).abs().mean())
             if has else np.nan,
             "daily_mean_abs_diff_A_B": float((both["rte_scada_operator_soc"] - both["rte_operator"]).abs().mean())

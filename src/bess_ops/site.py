@@ -112,7 +112,7 @@ def chart_fleet_rte(summary: pd.DataFrame, path: Path):
     ax.scatter(s["rte_corrected"], y, marker="|", color="k", s=80, zorder=4, label="RTE over the year")
     if "rte_regression_companion" in s:
         ax.scatter(s["rte_regression_companion"], y, marker="x", color="#666", s=18, zorder=4,
-                   label="conversion RTE, regression (bess-soc-soh-degradation)")
+                   label="marginal RTE, regression (bess-soc-soh-degradation)")
     reg = s["rte_registered"].where(s["rte_registered"] < 0.999)
     ax.scatter(reg, y, marker="o", facecolors="none", edgecolors="#999", s=18,
                label="registered efficiency factors (where below 1)")

@@ -74,21 +74,24 @@ not show auxiliaries behind the meter, temperatures or capacity tests (see Limit
 
 <h2>1. Round-trip efficiency of every NEM battery</h2>
 <p>RTE at AEMO's SCADA point over local days with at least 0.3 cycles, corrected for the change of the stored
-energy each battery reports to AEMO (BMS recalibration jumps removed, months with an inconsistent report left out).
-Bars span the 25th to 75th percentile of the days, the dot is the median, the tick the whole year. Crosses: the
-conversion efficiency from a regression of the same reported energy in the companion project
-bess-soc-soh-degradation, which separates standby losses; circles: the efficiency factors registered with AEMO.</p>
+energy each battery reports to AEMO (BMS recalibration jumps removed, months with an inconsistent report and
+inverted days left out). Bars span the 25th to 75th percentile of the days, the dot is the median, the tick the whole
+year. Crosses: the marginal efficiency from an hourly regression of the same reported energy in the companion
+project bess-soc-soh-degradation, which separates a constant standby drain (an estimate, available for 34 of the 55
+batteries); circles: the efficiency factors registered with AEMO. SCADA readings are 5-minute snapshots that net
+out regulation inside an interval, which biases the RTE low, most for one-hour units.</p>
 <div class="card"><div id="rte-plot" class="plot tall"></div></div>
 
 <h2>2. Availability: what is offered and what is physically there</h2>
 <p>Capacity-weighted availability from the discharge availability each battery offers (DISPATCHLOAD.AVAILABILITY
 against registered MW), over all intervals and over intervals in which it held more than 10 % of its registered
 energy, and the technical availability: the physical availability each participant declares with its bids
-(BIDPEROFFER_D.PASAAVAILABILITY), the lower of the discharge and charge sides against registered MW, as an LTSA's
-capacity formula would count it (near the SoC limits only the direction that can still operate counts). Batteries
-in service for at least six months, from the first month they declared 80 % of their power (commissioning before).
-Offers mix outages with energy limits, capacity held back under other contracts (system-integrity schemes) and
-bidding style; the declaration does not, but it is still the participant's statement, not a measurement.</p>
+(BIDPEROFFER_D.PASAAVAILABILITY, capability deliverable within 24 hours' notice, so an upper bound of a real-time
+availability), the lower of the discharge and charge sides against registered MW, as an LTSA's capacity formula
+would count it (near the SoC limits only the direction that can still operate counts). Batteries in service for at
+least six months, from the first month they declared 80 % of their power (commissioning before). With energy in
+store, the median battery offers all but 3 % of what it declares; a handful hold capacity back for system-integrity
+schemes and other contracts. The declaration is still the participant's statement, not a measurement.</p>
 <div class="card"><div id="av-plot" class="plot tall"></div></div>
 
 <h2>3. One battery over the year</h2>
@@ -105,7 +108,8 @@ with a consistent stored-energy report.</p>
 <h2>5. Validation with the operator's own data: New England BESS</h2>
 <p>ACEN publishes 5-minute power and SoC of both 100 MW sections. Computing the daily RTE three ways separates the
 two things that differ between an operator's data and market data: the metering point (A vs B) and the source of
-the stored energy (B vs C).</p>
+the stored energy (B vs C). The medians from reported energy are close to those from the operator's SoC, the
+single days are not: the daily RTE from reported energy is two to three times as noisy.</p>
 <div class="card"><div id="acen-plot" class="plot"></div></div>
 <div class="card scroll" style="margin-top:12px"><table id="acen-table"></table></div>
 
@@ -202,7 +206,7 @@ function rtePlot() {
   const year = {type: "scatter", mode: "markers", x: s.map(r => r.rte_corrected), y, name: "whole year",
     marker: {symbol: "line-ns-open", size: 12, color: css("--ink")}, hovertemplate: "%{y}<br>year %{x:.3f}<extra></extra>"};
   const reg = {type: "scatter", mode: "markers", x: s.map(r => r.rte_regression_companion), y,
-    name: "conversion RTE, regression (companion)", marker: {symbol: "x", size: 7, color: css("--muted")},
+    name: "marginal RTE, regression (companion)", marker: {symbol: "x", size: 7, color: css("--muted")},
     hovertemplate: "%{y}<br>regression %{x:.3f}<extra></extra>"};
   const regd = {type: "scatter", mode: "markers", x: s.map(r => r.rte_registered < 0.999 ? r.rte_registered : null), y,
     name: "registered factors (below 1)",
@@ -236,7 +240,7 @@ function avPlot() {
     customdata: s.map(r => [r.availability_technical_dis, r.availability_technical_ch, r.withheld_share,
                             r.technical_outage_hours_per_year]),
     hovertemplate: "%{y}<br>technical %{x:.1%} (discharge %{customdata[0]:.1%}, charge %{customdata[1]:.1%})<br>" +
-      "declared but not offered: %{customdata[2]:.1%} of MW<br>declared out: %{customdata[3]:.0f} h/yr<extra></extra>"};
+      "declared but not offered, energy stored: %{customdata[2]:.1%} of MW<br>declared out: %{customdata[3]:.0f} h/yr<extra></extra>"};
   Plotly.react("av-plot", [link, all, ok, tech], layoutBase({margin: {l: left(), r: 16, t: 30, b: 46},
     xaxis: axis({range: [0, 1.02], tickformat: ".0%", title: {text: "offered discharge availability", font: {size: 12}}}),
     yaxis: axis({automargin: true, tickfont: {size: narrow() ? 9 : 10}})}), cfg);
@@ -285,7 +289,7 @@ const COLS = [
   ["availability_technical", "Technical avail. (PASA)", r => pct(r.availability_technical), 1],
   ["in_service_from", "In service from", r => r.in_service_from || "-"],
   ["availability_technical_time", "Time technically full", r => pct(r.availability_technical_time), 1],
-  ["withheld_share", "Declared, not offered", r => pct(r.withheld_share), 1],
+  ["withheld_share", "Declared, not offered (energy stored)", r => pct(r.withheld_share), 1],
   ["technical_outage_hours_per_year", "Declared out h/yr", r => fmt(r.technical_outage_hours_per_year, 0), 1],
   ["soc_above_95", "Time >= 95 % energy", r => pct(r.soc_above_95), 1],
   ["soc_below_5", "Time <= 5 % energy", r => pct(r.soc_below_5), 1],
@@ -330,6 +334,8 @@ function acen() {
     ["Daily RTE median, C market data only", r => pct(r.daily_rte_median_C_market)],
     ["Mean absolute daily difference A-B (metering point)", r => fmt(100 * r.daily_mean_abs_diff_A_B, 1) + " pp"],
     ["Mean absolute daily difference B-C (state source)", r => fmt(100 * r.daily_mean_abs_diff_B_C, 1) + " pp"],
+    ["Daily RTE standard deviation, A / B / C", r => `${fmt(r.daily_rte_std_A, 3)} / ${fmt(r.daily_rte_std_B, 3)} / ${fmt(r.daily_rte_std_C, 3)}`],
+    ["Correlation of daily B and C", r => fmt(r.daily_corr_B_C, 2)],
     ["Rainflow EFC: operator SoC on registered MWh / market", r => `${fmt(r.rainflow_efc_operator_mwh_basis, 1)} / ${fmt(r.rainflow_efc_market, 1)}`],
     ["Time at <= 5 %: operator SoC / reported energy", r => `${pct(r.soc_below_5_operator)} / ${pct(r.soc_below_5_market)}`],
   ];

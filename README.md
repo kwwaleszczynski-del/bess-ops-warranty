@@ -75,30 +75,40 @@ like a real system would (kW and %, two PCS and BMS blocks, naive Europe/Warsaw 
 **Round-trip efficiency at the SCADA point is 0.82 for the median battery (interquartile range 0.78-0.85), and
 grows with duration**:
 
-| Duration | Batteries | RTE over the year, median (range) | Conversion RTE from the regression of the companion project |
+| Duration | Batteries | RTE over the year, median (range) | Marginal RTE from the regression of the companion project, median (batteries with a value) |
 |---|---|---|---|
-| about 1 h | 7 | 0.75 (0.47-0.81) | 0.919 |
-| about 2 h | 41 | 0.83 (0.74-0.86) | 0.924 |
-| 3 h or more | 5 | 0.88 (0.87-0.90) | 0.925 |
+| about 1 h | 7 | 0.75 (0.47-0.81) | 0.919 (2) |
+| about 2 h | 41 | 0.83 (0.74-0.86) | 0.924 (28) |
+| 3 h or more | 5 | 0.88 (0.87-0.90) | 0.925 (4) |
 
-- The conversion efficiency is the same for all durations (0.92, from the hourly regression of reported stored
-  energy in [bess-soc-soh-degradation](https://github.com/kwwaleszczynski-del/bess-soc-soh-degradation), which
-  separates a standby drain). What the meter sees over whole days is 9 pp lower for the median battery (4 to
-  18 pp): standby losses and auxiliaries taken through the connection point, which weigh more per MWh cycled in a
-  one-hour battery (Torrens Island 0.75, Hazelwood 0.73) than in a four-hour one (Melbourne Renewable Energy Hub
-  A3 0.89, Limondale 0.90).
+- The marginal efficiency from the hourly regression of reported stored energy in
+  [bess-soc-soh-degradation](https://github.com/kwwaleszczynski-del/bess-soc-soh-degradation) (it separates a
+  constant standby drain; an estimate from market data, not a measurement at the PCS terminals) is about 0.92 for
+  every duration, but it exists for only 34 of the 55 batteries, two of the seven one-hour units among them
+  (Torrens Island 0.935, Hazelwood 0.903). For those 34, what the meter sees over whole days is 9 pp lower for the
+  median battery (4 to 18 pp): standby losses and auxiliaries taken through the connection point, which weigh more
+  per MWh cycled in a one-hour battery (Torrens Island 0.75, Hazelwood 0.73) than in a four-hour one (Melbourne
+  Renewable Energy Hub A3 0.89, Limondale 0.90).
 - 95 % of the operational battery-months have a stored-energy report consistent with the metered energy (hourly
   regression, R² of at least 0.95); the median battery has 5 BMS recalibration jumps a month, which are removed
-  before the SoC correction.
+  before the SoC correction, and days on which the report runs against the metered energy (New England BESS,
+  1-5 August 2026, inside a month that passes) are left out as well.
+- SCADA readings are 5-minute snapshots: regulation FCAS inside an interval nets out, which understates charge and
+  discharge alike and biases the RTE low, most for one-hour units, which do more regulation.
 
 ![fleet RTE](docs/img/fleet_rte.png)
 
-**Technically the batteries are available; commercially much less is offered.** For the 38 batteries in service
-for at least six months (5.3 GW / 11.1 GWh, counted from the first month in which they declared 80 % of their
-power), the physical availability declared with the bids (PASA), counted like an LTSA capacity formula (the lower of
-the discharge and charge sides against registered power; near the SoC limits only the side that can still operate),
-has a median of **95.8 %** (interquartile range 94.5-98.7 %, 96.1 % weighted by MW). 15 of the 38 reach an
-illustrative 97 % guarantee and 26 reach 95 %; the median battery is declared out 217 hours a year.
+**Declared physical availability is high; for most batteries the gap to what is offered is the state of charge,
+not capacity held back.** For the 38 batteries in service for at least six months (5.3 GW / 11.1 GWh, counted from
+the first month in which they declared 80 % of their power), the physical availability declared with the bids
+(PASA: what the unit could deliver within 24 hours' notice, so an upper bound of what an LTSA would measure in real
+time), counted like an LTSA capacity formula (the lower of the discharge and charge sides against registered power;
+near the SoC limits only the side that can still operate), has a median of **95.8 %** (interquartile range
+94.5-98.7 %, 96.1 % weighted by MW). 15 of the 38 reach an illustrative 97 % guarantee and 26 reach 95 %; the median
+battery is declared out 217 hours a year. The median depends on which batteries count as in service: with
+Gannawarra, whose charge side sits at about 70 % of its registered charge power (a registration mismatch like
+Wandoan's), it is 95.7 %; without the in-service filter (48 batteries with at least six operational months) it is
+93.6 %, and 11 reach 97 %.
 
 | Same 38 batteries, same months | Median | Interquartile range |
 |---|---|---|
@@ -106,11 +116,15 @@ illustrative 97 % guarantee and 26 reach 95 %; the median battery is declared ou
 | Offered discharge availability (`AVAILABILITY` / registered MW) | 78.1 % | 66.5-83.7 % |
 | same, intervals with more than 10 % of the registered energy stored | 94.1 % | 89.6-97.5 % |
 | Offered charge availability (`MIN_AVAILABILITY` / registered charge MW) | 80.7 % | 69.1-85.5 % |
-| Declared available but not offered, share of registered MW | 15.5 % | 11.0-32.3 % |
+| Declared available but not offered, intervals with more than 10 % stored, share of registered MW | 3.2 % | 1.1-5.4 % |
+| same, all intervals (an empty battery offering less counts too) | 15.5 % | 11.0-32.3 % |
 
-- **What is held back is commercial, not technical.** The Victorian Big Battery offered 37 % of its power and
-  Hornsdale 47 %, yet both declared 99-100 % physical availability: the difference (62 % and 53 % of their power) is
-  capacity reserved for a system-integrity scheme and a government contract. A near-empty battery also offers less.
+- **A handful of batteries hold capacity back; for the median battery the gap is the state of charge.** With
+  energy in store, the median battery offers all but 3 % of the power it declares. Five hold back a third or more:
+  the Victorian Big Battery 60 % and Hornsdale 51 % of their power (reserved for a system-integrity scheme and a
+  government contract; both declared 99-100 % physical availability), Dalrymple North 44 %, Broken Hill 39 % and
+  Ballarat 34 %. Counted over all intervals the gap is 15.5 % for the median battery, most of it an empty battery
+  offering less.
 - **The state of charge matters for the declaration too.** Some operators declare almost no discharge capability
   when the battery is empty: counting both directions all the time, Chinchilla would have 58 % and Greenbank 72 %;
   SoC-aware, 84 % and 93 %. Wandoan declares 73 % of its registered charge power all year.
@@ -124,9 +138,15 @@ illustrative 97 % guarantee and 26 reach 95 %; the median battery is declared ou
 
 ![fleet availability](docs/img/fleet_availability.png)
 
-**Cycling.** The median battery discharged 263 equivalent full cycles a year at the SCADA point (rainflow on the
-reported energy: 313), three above 365 (rainflow: twelve). The median battery spent 6 % of the time at 95 % or more
-of its registered energy and 15 % at 5 % or less.
+**Cycling.** Counted on the registered energy and annualised over calendar time from the first operational month,
+the median battery discharged 262 equivalent full cycles a year at the SCADA point (rainflow on the reported energy,
+days with a consistent report: 304); three are above 365 (rainflow: twelve). The registered energy is not the
+usable energy: the reported envelope exceeds 105 % of the registered energy for 23 of the 55 batteries and stays
+below 90 % for 9, and New England's operator SoC stands for 251 MWh against 200 MWh registered. Against the
+reported usable window (0.5th to 99.5th percentile of the reported energy) the median is 271 cycles a year, one
+battery above 365. Neither is a warranty count, which uses the contract's reference energy and throughput basis.
+With a consistent report, the median battery spent 6 % of the time at 95 % or more of its registered energy and 11 %
+at 5 % or less.
 
 **Usable energy over time** (99.5th percentile of the reported stored energy, as a share of the registered energy,
 from the first month at full range): for 26 of 39 batteries with at least six such months the trend is within
@@ -138,14 +158,18 @@ from the first month at full range): for 26 of 39 batteries with at least six su
 ACEN publishes 5-minute power and SoC of both 100 MW / 200 MWh sections. Daily RTE computed three ways separates the
 metering point from the source of the stored energy:
 
-| New England BESS section 1, 6 Aug - 30 Sep 2026 (43 days) | Daily RTE, median |
-|---|---|
-| A: operator's power and operator's SoC | 0.868 |
-| B: AEMO SCADA and operator's SoC | 0.794 |
-| C: AEMO SCADA and the stored energy reported to AEMO (the benchmark) | 0.799 |
+| New England BESS, from 6 Aug 2026 | Section 1 (43 days): median (standard deviation) | Section 2 (10 days): median (standard deviation) |
+|---|---|---|
+| A: operator's power and operator's SoC | 0.868 (0.025) | 0.860 (0.020) |
+| B: AEMO SCADA and operator's SoC | 0.794 (0.039) | 0.780 (0.033) |
+| C: AEMO SCADA and the stored energy reported to AEMO (the benchmark) | 0.799 (0.086) | 0.736 (0.109) |
 
-- **The source of the stored energy hardly matters for the median (B vs C: 0.794 vs 0.799, 3.1 pp mean absolute
-  daily difference); the metering point does (A vs B: 7.3 pp).** AEMO's SCADA sees 2-5 % less energy discharged
+- **The metering point moves the daily RTE by 7-8 pp (A vs B, mean absolute daily difference 7.3 and 8.3 pp); the
+  source of the stored energy matters less, and only for medians.** Section 1: B 0.794 vs C 0.799 (3.1 pp mean
+  absolute daily difference); section 2: 0.780 vs 0.736 (6.7 pp). Day by day, the RTE from the reported energy is two
+  to three times as noisy as from the operator's SoC (standard deviation 0.086 vs 0.039 and 0.109 vs 0.033;
+  correlation of B and C 0.40 and 0.84): a monthly or yearly figure from market data is usable, a single day is
+  not. AEMO's SCADA sees 2-5 % less energy discharged
   and 4-13 % more charged than the operator's data (June-September, both sections), consistent with a measurement at the connection point that
   includes transformer losses and auxiliaries, against the operator's at the battery side. A monthly RTE from
   market data is an RTE including auxiliaries; it cannot be compared with an RTE guaranteed at the PCS terminals.
@@ -276,9 +300,14 @@ crossings) as the meter, `DISPATCHLOAD.INITIAL_ENERGY_STORAGE` as the stored ene
 (the offered discharge availability) and the registered discharge MW, charge MW and MWh of `DUDETAIL`, valid per
 day. `fetch-nem` adds, per battery and 5-minute interval, the offered charge availability
 (`DISPATCHLOAD.MIN_AVAILABILITY`) and from the final energy bids (`BIDPEROFFER_D`) the offered (`MAXAVAIL`) and the
-declared physical availability (`PASAAVAILABILITY`) in each direction. The technical availability is the LTSA
-capacity formula applied to PASA: $`a_i = \min\left(1, \mathrm{PASA}_{gen}/P_{dis}, \mathrm{PASA}_{load}/P_{ch}\right)`$;
-"declared but not offered" is the mean of $`\max(0, \mathrm{PASA}_{gen} - \mathrm{AVAIL})/P_{dis}`$. NEM time is AEST
+declared physical availability (`PASAAVAILABILITY`, what the unit could deliver within 24 hours' notice) in each
+direction. The technical availability is the LTSA capacity formula applied to PASA:
+$`a_i = \min\left(1, \mathrm{PASA}_{gen}/P_{dis}, \mathrm{PASA}_{load}/P_{ch}\right)`$ (at 10 % of the registered
+energy or less only the charge side, at 90 % or more only the discharge side); "declared but not offered" is the
+mean of $`\max(0, \mathrm{PASA}_{gen} - \mathrm{AVAIL})/P_{dis}`$ over intervals with more than 10 % of the
+registered energy stored. The state of charge (reported energy over registered MWh) is used only in months whose
+report passes the consistency check and on days that are not inverted (hourly correlation of the state change with
+the net charge below -0.5). Cycles are annualised over calendar time from the first operational month. NEM time is AEST
 (UTC+10) without DST. A month is operational with at least one cycle and 20 days of data.
 
 ## Use it on your own data
@@ -336,9 +365,12 @@ auxiliary model, data quality), `report_<month>.html` (the same as a self-contai
   LD are capped and offset). Every term is a YAML value to be set from the contract.
 - **What market data cannot show.** The NEM benchmark has no auxiliary metering behind the connection point, no
   temperatures, no capacity tests, no outage log and no warranty terms. Its RTE includes whatever the SCADA point
-  includes; its offered availability is a trading decision; its technical availability is the physical availability
-  the participant declares with its bids (PASA), which is the participant's statement, not a measurement, and does
-  not say why a unit was out (forced, planned, grid); its "usable energy" is the operator's operating window.
+  includes, from 5-minute snapshots that net out regulation inside an interval (biased low, most for one-hour
+  units); its offered availability is a trading decision; its technical availability is the physical availability
+  the participant declares with its bids (PASA), which is the participant's statement, not a measurement, counts
+  capability available within 24 hours' notice (an upper bound of a real-time availability) and does not say why a
+  unit was out (forced, planned, grid); its "usable energy" is the operator's operating window, and its cycles are
+  counted on the registered energy, not on a warranty's reference energy.
 - **Reported stored energy is the operator's number.** It follows the BMS, which recalibrates, and some operators
   report it wrongly for months; the checks find inconsistent months and jumps, not a consistent bias of the
   scale. The level of the reported energy did not match the operator's SoC at New England BESS.
@@ -347,7 +379,10 @@ auxiliary model, data quality), `report_<month>.html` (the same as a self-contai
 - **Synthetic verification** shows that the estimators are consistent with the physics they assume (constant
   efficiencies, a smooth auxiliary model, fade by the same law as the forecast). Real batteries have part-load
   efficiency curves, self-discharge, cell imbalance and SoC drift; the forecast of a real battery inherits the
-  uncertainty of the fade law and of the prior from one LFP cell type.
+  uncertainty of the fade law and of the prior from one LFP cell type. The forecast check is partly circular: the
+  synthetic fade follows the same law as the fit, and its cycle-ageing rate on the nameplate basis (0.0204 per
+  1000 cycles) is close to the prior from the cell fit (0.019 at the plant's 23 degC); it shows that the fit and its
+  band work, not that the law holds for a real battery.
 - **Capacity-test uncertainty** covers the instrument classes and the temperature correction, not the test
   procedure itself (rest time, SoC calibration before the test), which can matter more.
 
@@ -367,7 +402,7 @@ Only derived numbers are in the repository (`results/`, `docs/`); no raw data.
 ```bash
 python -m venv .venv
 .venv/Scripts/pip install -e ".[dev]"          # .venv/bin/pip on Linux/macOS
-pytest -q                                      # 44 tests, no network, about 30 s
+pytest -q                                      # 46 tests, no network, about 40 s
 python -m bess_ops verify                      # synthetic battery vs ground truth -> results/verification.json
 python -m bess_ops fetch-nem --registry ../nem-battery-behaviour/data/registry.parquet --out data/nem_extra --jobs 4
 python -m bess_ops nem --nem-data-dir ../nem-battery-behaviour/data --nem-extra-dir data/nem_extra \

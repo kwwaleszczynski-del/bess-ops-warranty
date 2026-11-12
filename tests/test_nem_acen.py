@@ -62,6 +62,26 @@ def test_inverted_report_is_flagged():
     assert monthly.loc["2026-02", "stored_consistent"]
 
 
+def test_inverted_days_inside_a_passing_month_are_left_out():
+    # five inverted days pass the monthly regression check of January but are caught day by day
+    monthly, summary, daily = unit_benchmark(fake_cache(inverted_days=5), "TEST1")
+    assert monthly.loc["2026-01", "inverted_days"] == 5
+    assert not any(d < "2026-01-06" for d in daily.index)
+    assert np.isnan(monthly.loc["2026-01", "rte"])          # the month starts on an inverted day: no state there
+
+
+def test_withheld_only_counts_intervals_with_energy_stored():
+    cache = with_extra(fake_cache())
+    disp = cache.dispatch
+    low = disp["INITIAL_ENERGY_STORAGE"] <= 0.10 * 200 + 1e-6      # near empty: offers nothing
+    disp.loc[low, "AVAILABILITY"] = 0.0
+    cache.extra["dispatchload"]["AVAILABILITY"] = disp["AVAILABILITY"].to_numpy()
+    monthly, summary, daily = unit_benchmark(cache, "TEST1")
+    jan = monthly.loc["2026-01"]
+    assert jan["withheld_share_all_intervals"] > jan["withheld_share"] + 0.05
+    assert jan["withheld_share"] == pytest.approx(1 / 31, abs=0.01)     # the offline day only
+
+
 def test_acen_parser_both_formats(tmp_path):
     header = '"t_stamp",' + ",".join(f'"c{i}"' for i in range(24)) + "\n"
     row = lambda ts: ts + "," + ",".join(["0"] * 20) + ",50000,41.5,-25000,60\n"  # noqa: E731
