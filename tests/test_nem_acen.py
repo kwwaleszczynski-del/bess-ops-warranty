@@ -144,3 +144,21 @@ def test_mms_zip_reader(tmp_path):
     assert list(df.columns) == ["SETTLEMENTDATE", "DUID", "MIN_AVAILABILITY"]
     assert df["MIN_AVAILABILITY"].tolist() == ["90", "70"]
     assert df["SETTLEMENTDATE"].iloc[1] == "2026/06/01 00:10:00"
+
+
+def test_exact_split_keeps_a_missing_reading_missing():
+    # old code: zero energy for the two intervals around the missing reading
+    out, inn = exact_split(np.array([10.0, 10.0, np.nan, -10.0, -10.0]))
+    dt = 5 / 60
+    assert out[0] == pytest.approx(10.0 * dt) and inn[3] == pytest.approx(10.0 * dt)
+    assert np.isnan(out[1]) and np.isnan(inn[1]) and np.isnan(out[2]) and np.isnan(inn[2])
+
+
+def test_missing_scada_readings_invalidate_the_month_not_its_rte():
+    cache = fake_cache()
+    s = cache.scada
+    gap = (s["SETTLEMENTDATE"] >= "2026-01-12 18:05") & (s["SETTLEMENTDATE"] < "2026-01-12 19:05")
+    cache.scada = s[~gap].reset_index(drop=True)              # an hour of discharge missing from the file
+    monthly, summary, daily = unit_benchmark(cache, "TEST1")
+    assert np.isnan(monthly.loc["2026-01", "rte"]) and monthly.loc["2026-02", "rte"] == pytest.approx(0.92, abs=0.01)
+    assert "2026-01-12" not in daily.index and "2026-01-13" in daily.index

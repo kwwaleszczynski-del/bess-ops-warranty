@@ -162,13 +162,13 @@ metering point from the source of the stored energy:
 |---|---|---|
 | A: operator's power and operator's SoC | 0.868 (0.025) | 0.860 (0.020) |
 | B: AEMO SCADA and operator's SoC | 0.794 (0.039) | 0.780 (0.033) |
-| C: AEMO SCADA and the stored energy reported to AEMO (the benchmark) | 0.799 (0.086) | 0.736 (0.109) |
+| C: AEMO SCADA and the stored energy reported to AEMO (the benchmark) | 0.795 (0.092) | 0.736 (0.109) |
 
 - **The metering point moves the daily RTE by 7-8 pp (A vs B, mean absolute daily difference 7.3 and 8.3 pp); the
-  source of the stored energy matters less, and only for medians.** Section 1: B 0.794 vs C 0.799 (3.1 pp mean
+  source of the stored energy matters less, and only for medians.** Section 1: B 0.794 vs C 0.795 (3.1 pp mean
   absolute daily difference); section 2: 0.780 vs 0.736 (6.7 pp). Day by day, the RTE from the reported energy is two
-  to three times as noisy as from the operator's SoC (standard deviation 0.086 vs 0.039 and 0.109 vs 0.033;
-  correlation of B and C 0.40 and 0.84): a monthly or yearly figure from market data is usable, a single day is
+  to three times as noisy as from the operator's SoC (standard deviation 0.092 vs 0.039 and 0.109 vs 0.033;
+  correlation of B and C 0.47 and 0.84): a monthly or yearly figure from market data is usable, a single day is
   not. AEMO's SCADA sees 2-5 % less energy discharged
   and 4-13 % more charged than the operator's data (June-September, both sections), consistent with a measurement at the connection point that
   includes transformer losses and auxiliaries, against the operator's at the battery side. A monthly RTE from
@@ -210,8 +210,17 @@ change of stored energy `dE` (from SoC times the SoC energy, or a reported store
 
 the energy left in store is worth $`\eta \Delta E`$ at the meter, the energy taken from store would need
 $`|\Delta E|/\eta`$ to refill. The one-way efficiency $`\eta`$ is given or found as the fixed point
-$`\eta = \sqrt{\mathrm{RTE}}`$ of the whole record. Windows with fewer than 0.3 cycles a day (5 a month) are not
+$`\eta = \sqrt{\mathrm{RTE}}`$ of the complete windows. Windows with fewer than 0.3 cycles a day (5 a month) are not
 assessed: on idle days auxiliaries and the SoC resolution dominate.
+
+**Missing data are missing energy, not zero energy.** The record is put on its complete regular grid first, so an
+interval absent from the index counts like one with a NaN. A window with a missing meter reading has an energy
+balance that does not close (the change of stored energy covers the whole window, the metered energy does not), so
+its RTE is NaN and it is not valid; `coverage` is the share of the window's intervals with a complete reading, and
+the default `min_coverage` of 1.0 can be lowered knowingly. The interval after which no stored energy is known, at
+the end of the record, is not expected. Windows without a known change of stored energy have no corrected RTE
+either, and the energy balance leaves its loss terms empty where it does not close. On NEM data a missing SCADA
+reading is missing energy as well (the exact split of the line between two readings stays NaN).
 
 **Energy balance.** `E_in = E_out + dE + losses`; with auxiliary and DC signals the losses split into auxiliaries,
 PCS (`E_in,pcs - E_dc,ch + E_dc,dis - E_out,pcs`) and battery (`E_dc,ch - E_dc,dis - dE`). A negative battery term
@@ -371,6 +380,10 @@ auxiliary model, data quality), `report_<month>.html` (the same as a self-contai
   capability available within 24 hours' notice (an upper bound of a real-time availability) and does not say why a
   unit was out (forced, planned, grid); its "usable energy" is the operator's operating window, and its cycles are
   counted on the registered energy, not on a warranty's reference energy.
+- **Gaps.** Windows with a missing meter reading have no RTE (see Method), and the NEM and ACEN files used here have
+  no missing SCADA or operator power readings, only missing reports of the stored energy. Cycle counts and the
+  warranty checks skip missing intervals, so in a month with gaps they are lower bounds; `coverage` in the monthly
+  KPIs shows which months have gaps.
 - **Reported stored energy is the operator's number.** It follows the BMS, which recalibrates, and some operators
   report it wrongly for months; the checks find inconsistent months and jumps, not a consistent bias of the
   scale. The level of the reported energy did not match the operator's SoC at New England BESS.
@@ -402,7 +415,7 @@ Only derived numbers are in the repository (`results/`, `docs/`); no raw data.
 ```bash
 python -m venv .venv
 .venv/Scripts/pip install -e ".[dev]"          # .venv/bin/pip on Linux/macOS
-pytest -q                                      # 46 tests, no network, about 40 s
+pytest -q                                      # 55 tests, no network, about 40 s
 python -m bess_ops verify                      # synthetic battery vs ground truth -> results/verification.json
 python -m bess_ops fetch-nem --registry ../nem-battery-behaviour/data/registry.parquet --out data/nem_extra --jobs 4
 python -m bess_ops nem --nem-data-dir ../nem-battery-behaviour/data --nem-extra-dir data/nem_extra \

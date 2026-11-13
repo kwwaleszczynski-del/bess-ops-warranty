@@ -19,6 +19,13 @@ found by fixed-point iteration. With ``dE = 0`` both lines reduce to ``E_out / E
 Windows are calendar days, months and years in the site's local time zone (a local day in Europe/Warsaw has 23 or 25
 hours at the DST changes) or LTSA years counted from the commercial operation date.
 
+Missing data. The record is first put on its complete regular grid, so an interval absent from the index counts as
+missing like one with a NaN. A window with a missing meter reading has an energy balance that does not close: the change
+of stored energy covers the whole window, the metered energy does not. Its ratios are therefore NaN and ``valid`` is
+False unless the caller accepts a lower ``min_coverage`` (default 1.0: every expected interval; the interval after
+which no stored energy is known, at the end of the record, is not expected). ``coverage`` is the share of the expected
+intervals with a complete reading, and the automatic one-way efficiency is found from the complete windows only.
+
 Usage:
     flows = interval_flows(site, site_cfg)
     daily = window_rte(site, site_cfg, "D")
@@ -31,11 +38,14 @@ their own flows (exact metered energy, a stored energy cleaned of BMS jumps).
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 from res_asset_kpi import bess
 from res_asset_kpi.bess import auto_eta, corrected_rte  # noqa: F401
 
+log = logging.getLogger(__name__)
 _FREQ = {"LY": "CY"}  # LTSA years are the library's contract years
 
 
@@ -60,11 +70,38 @@ def _state_at(e: pd.Series, pos: np.ndarray, tolerance: int = 2) -> np.ndarray:
     return vals
 
 
+def full_grid(frame: pd.DataFrame) -> pd.DataFrame:
+    """The frame on its complete regular grid: intervals missing from the index become rows of NaN."""
+    idx = frame.index
+    if len(idx) < 2:
+        return frame
+    step = pd.Series(idx[1:] - idx[:-1]).mode().iloc[0]
+    if step <= pd.Timedelta(0) or not idx.is_unique or not idx.is_monotonic_increasing:
+        return frame
+    grid = pd.date_range(idx[0], idx[-1], freq=step, name=idx.name)
+    if len(grid) == len(idx):
+        return frame
+    out = frame.reindex(grid)
+    out.attrs = dict(frame.attrs)
+    return out
+
+
+def _complete_rows(flows: pd.DataFrame, columns: tuple[str, ...]) -> np.ndarray:
+    """Rows in which every flow the ratios need is present (columns that do not exist at all are not needed)."""
+    ok = np.ones(len(flows), dtype=bool)
+    for c in columns:
+        if c in flows and flows[c].notna().any():
+            ok &= flows[c].notna().to_numpy()
+    return ok
+
+
 def window_sums(flows: pd.DataFrame, keys: pd.Series) -> pd.DataFrame:
     """Sum of the flows and the change of stored energy over each window.
 
-    The change of stored energy runs from the instant the window starts to the instant it ends (the start of the
-    next window). If no state is known after the last interval of the record, that interval is left out.
+    ``flows`` must be on its complete regular grid (see ``full_grid``). The change of stored energy runs from the
+    instant the window starts to the instant it ends (the start of the next window). If no state is known after the
+    last interval of the record, that interval is left out of the window and is not expected: ``coverage`` is the
+    share of the remaining intervals that have a complete meter reading (``coverage_dc`` the same for the DC signal).
     """
     n = len(flows)
     pos = pd.Series(np.arange(n), index=flows.index)
@@ -82,8 +119,13 @@ def window_sums(flows: pd.DataFrame, keys: pd.Series) -> pd.DataFrame:
                     ignore_index=True)
     sums = pd.DataFrame(cum.to_numpy()[end] - cum.to_numpy()[first.to_numpy()], index=first.index,
                         columns=cum.columns)
-    valid_p = flows["e_out"].notna().astype(float).groupby(keys.to_numpy(), sort=True).mean()
-    sums["coverage"] = valid_p.to_numpy()
+    starts = first.to_numpy()
+    for name, columns in (("coverage", ("e_out", "e_in", "e_out_pcs", "e_in_pcs", "e_aux")),
+                          ("coverage_dc", ("e_dc_dis", "e_dc_ch"))):
+        done = np.r_[0, np.cumsum(_complete_rows(flows, columns))]
+        expected = end - starts
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sums[name] = np.where(expected > 0, (done[end] - done[starts]) / expected, np.nan)
     sums["hours"] = (end - first.to_numpy()) * (flows.index[1] - flows.index[0]) / pd.Timedelta("1h") \
         if n > 1 else 0.0
     sums["stored_start"] = e_start
@@ -98,42 +140,55 @@ def window_sums(flows: pd.DataFrame, keys: pd.Series) -> pd.DataFrame:
 
 def window_rte(site: pd.DataFrame, site_cfg: dict, freq: str, eta: float | str = "auto",
                flows: pd.DataFrame | None = None, min_efc: float | None = None,
-               min_coverage: float = 0.95) -> pd.DataFrame:
+               min_coverage: float = 1.0) -> pd.DataFrame:
     """Energy in/out and RTE per window (``rte`` includes auxiliaries, ``rte_excl_aux`` does not).
 
     Columns: e_out, e_in, e_aux, d_stored, coverage, efc (input energy of the PCS / SoC energy), rte_raw
     (E_out / E_in at the meter, uncorrected), rte, rte_excl_aux, eta (the one-way efficiency used) and valid: the
-    window has at least ``min_efc`` cycles (default 0.3 a day, 5 a month) and ``min_coverage`` of the data. On
-    days with little throughput the auxiliaries and the SoC resolution dominate and the ratio means little.
+    window has at least ``min_efc`` cycles (default 0.3 a day, 5 a month), a known change of stored energy and at
+    least ``min_coverage`` of its expected intervals (default 1.0, see the module docstring). On days with little
+    throughput the auxiliaries and the SoC resolution dominate and the ratio means little. Below ``min_coverage``
+    the ratios are NaN; ``rte_raw`` needs only the coverage.
     """
-    flows = interval_flows(site, site_cfg) if flows is None else flows
-    keys = window_keys(site.index, site_cfg["timezone"], freq, site_cfg.get("cod"))
+    if not 0.0 < min_coverage <= 1.0:
+        raise ValueError("min_coverage must be in (0, 1]")
+    flows = interval_flows(full_grid(site), site_cfg) if flows is None else full_grid(flows)
+    keys = window_keys(flows.index, site_cfg["timezone"], freq, site_cfg.get("cod"))
     s = window_sums(flows, keys)
     have_pcs = s["e_in_pcs"].notna().any()
+    enough = (s["coverage"] >= min_coverage - 1e-12).to_numpy()
+    complete = enough & s["d_stored"].notna().to_numpy()
     if eta == "auto":
-        total = window_sums(flows, pd.Series("all", index=flows.index)).iloc[0]
-        if have_pcs:
-            eta = auto_eta(total["e_out_pcs"], total["e_in_pcs"], total["d_stored"])
-        else:
-            eta = auto_eta(total["e_out"], total["e_in"], total["d_stored"])
+        ok = s[complete]
+        if len(ok) < len(s):
+            log.warning("one-way efficiency from %d of %d windows (the others lack data)", len(ok), len(s))
+        cols = ("e_out_pcs", "e_in_pcs") if have_pcs else ("e_out", "e_in")
+        eta = auto_eta(float(ok[cols[0]].sum()), float(ok[cols[1]].sum()), float(ok["d_stored"].sum()))
     eta = float(eta)
     mode = site_cfg["aux_metering"]
     if mode == "separate" and s["e_aux"].notna().any():
         e_in_incl = s["e_in"] + s["e_aux"]
     else:
         e_in_incl = s["e_in"]
-    s["rte_raw"] = s["e_out"] / s["e_in"].where(s["e_in"] > 0)
-    s["rte"] = corrected_rte(s["e_out"], e_in_incl, s["d_stored"], eta)
+    s["rte_raw"] = (s["e_out"] / s["e_in"].where(s["e_in"] > 0)).where(enough)
+    s["rte"] = np.where(complete, corrected_rte(s["e_out"], e_in_incl, s["d_stored"], eta), np.nan)
     if have_pcs:
-        s["rte_excl_aux"] = corrected_rte(s["e_out_pcs"], s["e_in_pcs"], s["d_stored"], eta)
+        s["rte_excl_aux"] = np.where(complete, corrected_rte(s["e_out_pcs"], s["e_in_pcs"], s["d_stored"], eta),
+                                     np.nan)
     else:
         s["rte_excl_aux"] = np.nan
     basis = s["e_in_pcs"] if have_pcs else s["e_in"]
     s["efc"] = basis / site_cfg["soc_energy_mwh"]
     s["eta"] = eta
     need = bess.MIN_EFC.get(_FREQ.get(freq, freq), 0.0) if min_efc is None else min_efc
-    s["valid"] = (s["efc"] >= need) & (s["coverage"] >= min_coverage) & s["d_stored"].notna()
+    s["valid"] = (s["efc"] >= need) & complete
     return s
+
+
+def _hour_sum(x: pd.Series, hour: pd.DatetimeIndex) -> pd.Series:
+    """Energy per hour; NaN if any interval of the hour is missing (a partial sum is not the energy of the hour)."""
+    g = x.groupby(hour)
+    return g.sum(min_count=1).where(g.count() == g.size())
 
 
 def state_jumps(stored: pd.Series, e_in: pd.Series, e_out: pd.Series, capacity_mwh: float,
@@ -152,8 +207,8 @@ def state_jumps(stored: pd.Series, e_in: pd.Series, e_out: pd.Series, capacity_m
     hour = stored.index.floor("1h")
     first = stored.groupby(hour).first()
     d_e = first.shift(-1) - first
-    x_in = e_in.groupby(hour).sum(min_count=1)
-    x_out = e_out.groupby(hour).sum(min_count=1)
+    x_in = _hour_sum(e_in, hour)
+    x_out = _hour_sum(e_out, hour)
     ok = (d_e.notna() & x_in.notna() & x_out.notna()).to_numpy()
     fit = {"a": np.nan, "b": np.nan, "c": np.nan, "r2": np.nan, "hours": int(ok.sum()), "jumps": 0}
     if ok.sum() < 24:
@@ -196,7 +251,7 @@ def inverted_days(stored: pd.Series, e_in: pd.Series, e_out: pd.Series, timezone
     hour = stored.index.floor("1h")
     first = stored.groupby(hour).first()
     d_e = first.shift(-1) - first
-    net = e_in.groupby(hour).sum(min_count=1) - e_out.groupby(hour).sum(min_count=1)
+    net = _hour_sum(e_in, hour) - _hour_sum(e_out, hour)
     frame = pd.DataFrame({"d_e": d_e, "net": net}).dropna()
     frame = frame[frame["net"].abs() > 1e-6]
     day = frame.index.tz_convert(timezone).strftime("%Y-%m-%d")
@@ -208,17 +263,19 @@ def inverted_days(stored: pd.Series, e_in: pd.Series, e_out: pd.Series, timezone
 
 
 def energy_balance(site: pd.DataFrame, site_cfg: dict, freq: str = "M",
-                   flows: pd.DataFrame | None = None) -> pd.DataFrame:
+                   flows: pd.DataFrame | None = None, min_coverage: float = 1.0) -> pd.DataFrame:
     """Where the imported energy went, per window (MWh).
 
     ``e_in = e_out + d_stored + losses``; with an auxiliary signal behind the meter the losses split into
     ``e_aux`` and conversion losses; with a DC signal the conversion losses split further into the PCS
     (``e_in_pcs - e_dc_ch + e_dc_dis - e_out_pcs``) and the battery (``e_dc_ch - e_dc_dis - d_stored``). The
     split is an identity on the measured signals; what tests it is the battery term, which must be small and
-    positive: a negative one means the SoC scale or the DC measurement does not fit the metered energy.
+    positive: a negative one means the SoC scale or the DC measurement does not fit the metered energy. A window
+    with less than ``min_coverage`` of its intervals (the DC terms: of its DC readings) has no closing balance: its
+    loss terms are NaN, the summed energies and ``coverage`` stay.
     """
-    flows = interval_flows(site, site_cfg) if flows is None else flows
-    s = window_sums(flows, window_keys(site.index, site_cfg["timezone"], freq, site_cfg.get("cod")))
+    flows = interval_flows(full_grid(site), site_cfg) if flows is None else full_grid(flows)
+    s = window_sums(flows, window_keys(flows.index, site_cfg["timezone"], freq, site_cfg.get("cod")))
     out = pd.DataFrame(index=s.index)
     out["e_in"] = s["e_in"]
     out["e_out"] = s["e_out"]
@@ -234,5 +291,12 @@ def energy_balance(site: pd.DataFrame, site_cfg: dict, freq: str = "M",
         out["losses_pcs"] = s["e_in_pcs"] - s["e_dc_ch"] + s["e_dc_dis"] - s["e_out_pcs"]
         out["losses_battery"] = s["e_dc_ch"] - s["e_dc_dis"] - s["d_stored"]
         out["battery_loss_share"] = out["losses_battery"] / s["e_dc_ch"].where(s["e_dc_ch"] > 0)
+    gap = (s["coverage"] < min_coverage - 1e-12).to_numpy()
+    loss_cols = [c for c in ("losses_total", "losses_conversion", "losses_pcs", "losses_battery",
+                             "battery_loss_share") if c in out]
+    out.loc[gap, loss_cols] = np.nan
+    if "losses_pcs" in out:
+        out.loc[(s["coverage_dc"] < min_coverage - 1e-12).to_numpy(),
+                [c for c in ("losses_pcs", "losses_battery", "battery_loss_share") if c in out]] = np.nan
     out["coverage"] = s["coverage"]
     return out

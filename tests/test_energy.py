@@ -91,3 +91,91 @@ def test_inverted_days():
     e[:48] = 100 - e[:48]                               # first two days report the headroom
     c = inverted_days(pd.Series(e, index=idx), e_in, e_out, "UTC")
     assert (c.iloc[:2] < -0.9).all() and (c.iloc[2:3] > 0.9).all()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Missing data: a gap is missing energy, not zero energy
+# ---------------------------------------------------------------------------------------------------------------------
+
+def month_of_cycles(eta=0.95):
+    """30 days, hourly, one cycle a day (charge 4 h, discharge 4 h at the round trip eta**2): the month RTE is exact."""
+    tz = "Europe/Warsaw"
+    idx = pd.date_range(pd.Timestamp("2025-06-01").tz_localize(tz), periods=24 * 30, freq="1h")
+    p = np.zeros(len(idx))
+    hour = idx.hour.to_numpy()
+    p[(hour >= 10) & (hour < 14)] = -5.0
+    p[(hour >= 18) & (hour < 22)] = 5.0 * eta * eta
+    e = np.empty(len(idx))
+    e[0] = 8.0
+    for i in range(1, len(idx)):
+        q = p[i - 1]
+        e[i] = e[i - 1] + (-q * eta if q < 0 else -q / eta)
+    cfg = {"aux_metering": "none", "soc_energy_mwh": 20.0, "timezone": tz, "cod": None}
+    return idx, p, e, cfg, tz
+
+
+GAP = slice(9 * 24 + 18, 9 * 24 + 22)               # the four discharge hours of day 10
+
+
+def test_complete_month_is_exact():
+    idx, p, e, cfg, tz = month_of_cycles()
+    r = window_rte(site_frame({"p_meter": p, "e_stored": e}, idx, tz), cfg, "M", eta=0.95).iloc[0]
+    assert r["rte"] == pytest.approx(0.95 ** 2) and r["coverage"] == 1.0 and r["valid"]
+
+
+def test_nan_meter_reading_has_no_rte():
+    # old code: coverage 0.994 >= 0.95, valid, RTE 0.872 (the missing discharge counted as zero energy)
+    idx, p, e, cfg, tz = month_of_cycles()
+    p[GAP] = np.nan
+    r = window_rte(site_frame({"p_meter": p, "e_stored": e}, idx, tz), cfg, "M", eta=0.95).iloc[0]
+    assert r["coverage"] == pytest.approx(1 - 4 / (24 * 30 - 1))
+    assert np.isnan(r["rte"]) and np.isnan(r["rte_raw"]) and not r["valid"]
+    assert r["e_in"] > 0                                    # the summed energies stay visible
+
+
+def test_rows_absent_from_the_index_count_as_missing():
+    # old code: coverage 1.0 (computed from the rows present), valid, RTE 0.872
+    idx, p, e, cfg, tz = month_of_cycles()
+    keep = np.ones(len(idx), bool)
+    keep[GAP] = False
+    r = window_rte(site_frame({"p_meter": p[keep], "e_stored": e[keep]}, idx[keep], tz), cfg, "M",
+                   eta=0.95).iloc[0]
+    assert r["coverage"] < 1.0
+    assert np.isnan(r["rte"]) and not r["valid"]
+
+
+def test_lower_min_coverage_accepts_the_bias_knowingly():
+    idx, p, e, cfg, tz = month_of_cycles()
+    p[GAP] = np.nan
+    r = window_rte(site_frame({"p_meter": p, "e_stored": e}, idx, tz), cfg, "M", eta=0.95,
+                   min_coverage=0.99).iloc[0]
+    assert r["valid"] and r["rte"] < 0.95 ** 2 - 0.02       # valid, and visibly too low: the caller chose it
+    with pytest.raises(ValueError):
+        window_rte(site_frame({"p_meter": p, "e_stored": e}, idx, tz), cfg, "M", min_coverage=0.0)
+
+
+def test_only_the_window_with_the_gap_is_dropped_and_eta_comes_from_the_others():
+    idx, p, e, cfg, tz = month_of_cycles()
+    p[GAP] = np.nan
+    r = window_rte(site_frame({"p_meter": p, "e_stored": e}, idx, tz), cfg, "D")
+    assert r["valid"].sum() == 29 and not r.loc["2025-06-10", "valid"]
+    assert r["eta"].iloc[0] == pytest.approx(0.95, abs=1e-6)        # old code: 0.9, the gap dragged it down
+    assert r.loc[r["valid"], "rte"].to_numpy() == pytest.approx(0.95 ** 2)
+
+
+def test_energy_balance_has_no_losses_where_it_does_not_close():
+    idx, p, e, cfg, tz = month_of_cycles()
+    full = energy_balance(site_frame({"p_meter": p, "e_stored": e}, idx, tz), cfg, "M").iloc[0]
+    assert full["losses_total"] == pytest.approx(full["e_in"] - full["e_out"] - full["d_stored"])
+    p[GAP] = np.nan
+    b = energy_balance(site_frame({"p_meter": p, "e_stored": e}, idx, tz), cfg, "M").iloc[0]
+    assert np.isnan(b["losses_total"]) and b["coverage"] < 1.0
+
+
+def test_hourly_sums_for_the_state_checks_need_every_interval():
+    idx = pd.date_range("2025-06-01", periods=4 * 12, freq="5min", tz="UTC")
+    x = pd.Series(1.0, index=idx)
+    x.iloc[5] = np.nan                                      # one missing interval in the first hour
+    from bess_ops.energy import _hour_sum
+    s = _hour_sum(x, idx.floor("1h"))
+    assert np.isnan(s.iloc[0]) and s.iloc[1] == 12.0

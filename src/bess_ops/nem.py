@@ -181,6 +181,8 @@ def exact_split(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     share_pos = np.where(a > 0, f, 1 - f)
     pos = np.where(cross, top * share_pos / 2, pos)
     neg = np.where(cross, -bottom * (1 - share_pos) / 2, neg)
+    gap = np.isnan(a) | np.isnan(b)             # a missing reading is missing energy, not zero energy
+    pos, neg = np.where(gap, np.nan, pos), np.where(gap, np.nan, neg)
     return np.r_[pos, np.nan] * DT_H, np.r_[neg, np.nan] * DT_H
 
 
