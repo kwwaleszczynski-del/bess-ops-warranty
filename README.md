@@ -72,13 +72,15 @@ like a real system would (kW and %, two PCS and BMS blocks, naive Europe/Warsaw 
 
 55 batteries (8.9 GW, 20.3 GWh) with at least three operational months between October 2025 and September 2026.
 
-**Round-trip efficiency at the SCADA point is 0.82 for the median battery (interquartile range 0.78-0.85), and
-grows with duration**:
+**Round-trip efficiency at the SCADA point is 0.825 for the median of the 52 batteries with an RTE (interquartile
+range 0.785-0.850), and grows with duration**. Three of the 55 have no RTE for the year (no data, not zero): Mornington
+and Clements Gap have no month with a consistent stored-energy report, and New England section 2 has one whose change
+of stored energy at its ends is unknown:
 
 | Duration | Batteries | RTE over the year, median (range) | Marginal RTE from the regression of the companion project, median (batteries with a value) |
 |---|---|---|---|
 | about 1 h | 7 | 0.75 (0.47-0.81) | 0.919 (2) |
-| about 2 h | 41 | 0.83 (0.74-0.86) | 0.924 (28) |
+| about 2 h | 40 | 0.83 (0.74-0.86) | 0.924 (28) |
 | 3 h or more | 5 | 0.88 (0.87-0.90) | 0.925 (4) |
 
 - The marginal efficiency from the hourly regression of reported stored energy in
@@ -162,13 +164,13 @@ metering point from the source of the stored energy:
 |---|---|---|
 | A: operator's power and operator's SoC | 0.868 (0.025) | 0.860 (0.020) |
 | B: AEMO SCADA and operator's SoC | 0.794 (0.039) | 0.780 (0.033) |
-| C: AEMO SCADA and the stored energy reported to AEMO (the benchmark) | 0.795 (0.092) | 0.736 (0.109) |
+| C: AEMO SCADA and the stored energy reported to AEMO (the benchmark) | 0.795 (0.092) | 0.723 (0.127) |
 
 - **The metering point moves the daily RTE by 7-8 pp (A vs B, mean absolute daily difference 7.3 and 8.3 pp); the
   source of the stored energy matters less, and only for medians.** Section 1: B 0.794 vs C 0.795 (3.1 pp mean
-  absolute daily difference); section 2: 0.780 vs 0.736 (6.7 pp). Day by day, the RTE from the reported energy is two
-  to three times as noisy as from the operator's SoC (standard deviation 0.092 vs 0.039 and 0.109 vs 0.033;
-  correlation of B and C 0.47 and 0.84): a monthly or yearly figure from market data is usable, a single day is
+  absolute daily difference); section 2: 0.780 vs 0.723 (7.9 pp). Day by day, the RTE from the reported energy is two
+  to four times as noisy as from the operator's SoC (standard deviation 0.092 vs 0.039 and 0.127 vs 0.033;
+  correlation of B and C 0.47 and 0.83): a monthly or yearly figure from market data is usable, a single day is
   not. AEMO's SCADA sees 2-5 % less energy discharged
   and 4-13 % more charged than the operator's data (June-September, both sections), consistent with a measurement at the connection point that
   includes transformer losses and auxiliaries, against the operator's at the battery side. A monthly RTE from
@@ -221,6 +223,17 @@ the default `min_coverage` of 1.0 can be lowered knowingly. The interval after w
 the end of the record, is not expected. Windows without a known change of stored energy have no corrected RTE
 either, and the energy balance leaves its loss terms empty where it does not close. On NEM data a missing SCADA
 reading is missing energy as well (the exact split of the line between two readings stays NaN).
+
+**An undetermined efficiency is no data.** The one-way efficiency is found from the complete windows; with no complete
+window, no charge or no discharge it is undetermined (NaN) and there is no default value, since a constant would give
+plausible-looking ratios from no information. A window whose RTE needs the correction then has no RTE and is not
+valid. Every window carries a `status` ("ok", "too few cycles", or "no data: gap in the meter readings", "no data:
+stored energy unknown at the window ends", "no data: one-way efficiency not determined"), the analysis lists the
+windows without data (`rte_no_data`) and counts them next to the damages ("RTE windows without data"), because a
+window that could not be assessed is not a window without damages. Daily windows hand their efficiency on to months
+and years, or "auto" so that each table finds its own when the days found none. The monthly report shows "no data"
+and the reason instead of an empty cell or a pass. A battery of the NEM benchmark without an RTE has a status of its own
+(`rte_status`) and is listed, not counted as zero.
 
 **Energy balance.** `E_in = E_out + dE + losses`; with auxiliary and DC signals the losses split into auxiliaries,
 PCS (`E_in,pcs - E_dc,ch + E_dc,dis - E_out,pcs`) and battery (`E_dc,ch - E_dc,dis - dE`). A negative battery term
@@ -415,7 +428,7 @@ Only derived numbers are in the repository (`results/`, `docs/`); no raw data.
 ```bash
 python -m venv .venv
 .venv/Scripts/pip install -e ".[dev]"          # .venv/bin/pip on Linux/macOS
-pytest -q                                      # 55 tests, no network, about 40 s
+pytest -q                                      # 63 tests, no network, about 60 s
 python -m bess_ops verify                      # synthetic battery vs ground truth -> results/verification.json
 python -m bess_ops fetch-nem --registry ../nem-battery-behaviour/data/registry.parquet --out data/nem_extra --jobs 4
 python -m bess_ops nem --nem-data-dir ../nem-battery-behaviour/data --nem-extra-dir data/nem_extra \

@@ -26,6 +26,13 @@ False unless the caller accepts a lower ``min_coverage`` (default 1.0: every exp
 which no stored energy is known, at the end of the record, is not expected). ``coverage`` is the share of the expected
 intervals with a complete reading, and the automatic one-way efficiency is found from the complete windows only.
 
+The one-way efficiency can be undetermined (NaN): no complete window, no charge or no discharge. There is no default
+value: a window whose RTE needs the correction then has no RTE, and ``valid`` is False. Every window carries a
+``status`` that says why it has no RTE ("no data: ...") or that it was not assessed ("too few cycles"), so windows
+without data can be counted and listed and never pass as a missing or zero result. A table that learned no
+efficiency of its own should not hand the NaN on to windows of another length: ``carried_eta`` gives the efficiency to
+pass on, or "auto" so that each table finds its own.
+
 Usage:
     flows = interval_flows(site, site_cfg)
     daily = window_rte(site, site_cfg, "D")
@@ -47,6 +54,11 @@ from res_asset_kpi.bess import auto_eta, corrected_rte  # noqa: F401
 
 log = logging.getLogger(__name__)
 _FREQ = {"LY": "CY"}  # LTSA years are the library's contract years
+STATUS_OK = "ok"
+STATUS_IDLE = "too few cycles"
+STATUS_GAP = "no data: gap in the meter readings"
+STATUS_STATE = "no data: stored energy unknown at the window ends"
+STATUS_ETA = "no data: one-way efficiency not determined"
 
 
 def window_keys(index: pd.DatetimeIndex, timezone: str, freq: str, cod: pd.Timestamp | None = None) -> pd.Series:
@@ -144,11 +156,12 @@ def window_rte(site: pd.DataFrame, site_cfg: dict, freq: str, eta: float | str =
     """Energy in/out and RTE per window (``rte`` includes auxiliaries, ``rte_excl_aux`` does not).
 
     Columns: e_out, e_in, e_aux, d_stored, coverage, efc (input energy of the PCS / SoC energy), rte_raw
-    (E_out / E_in at the meter, uncorrected), rte, rte_excl_aux, eta (the one-way efficiency used) and valid: the
-    window has at least ``min_efc`` cycles (default 0.3 a day, 5 a month), a known change of stored energy and at
-    least ``min_coverage`` of its expected intervals (default 1.0, see the module docstring). On days with little
-    throughput the auxiliaries and the SoC resolution dominate and the ratio means little. Below ``min_coverage``
-    the ratios are NaN; ``rte_raw`` needs only the coverage.
+    (E_out / E_in at the meter, uncorrected), rte, rte_excl_aux, eta (the one-way efficiency used, NaN if it could
+    not be determined), status and valid. ``valid`` (status "ok"): the window has at least ``min_efc`` cycles (default
+    0.3 a day, 5 a month), a known change of stored energy, at least ``min_coverage`` of its expected intervals
+    (default 1.0, see the module docstring) and an RTE. On days with little throughput the auxiliaries and the SoC
+    resolution dominate and the ratio means little ("too few cycles"). Below ``min_coverage`` the ratios are NaN;
+    ``rte_raw`` needs only the coverage.
     """
     if not 0.0 < min_coverage <= 1.0:
         raise ValueError("min_coverage must be in (0, 1]")
@@ -181,8 +194,36 @@ def window_rte(site: pd.DataFrame, site_cfg: dict, freq: str, eta: float | str =
     s["efc"] = basis / site_cfg["soc_energy_mwh"]
     s["eta"] = eta
     need = bess.MIN_EFC.get(_FREQ.get(freq, freq), 0.0) if min_efc is None else min_efc
-    s["valid"] = (s["efc"] >= need) & complete
+    complete_rte = complete & s["rte"].notna().to_numpy()
+    s["status"] = np.select(
+        [~enough, s["d_stored"].isna().to_numpy(), (s["efc"] < need).to_numpy(), ~complete_rte],
+        [STATUS_GAP, STATUS_STATE, STATUS_IDLE, STATUS_ETA], default=STATUS_OK)
+    s["valid"] = s["status"] == STATUS_OK
+    if not np.isfinite(eta):
+        log.warning("one-way efficiency not determined: windows that need the correction have no RTE")
     return s
+
+
+def carried_eta(windows: pd.DataFrame) -> float | str:
+    """The one-way efficiency of a window table to use for windows of another length: its own value, or "auto" (each
+    table finds its own from its complete windows) when the table did not determine one."""
+    eta = float(windows["eta"].iloc[0]) if len(windows) else float("nan")
+    return eta if np.isfinite(eta) else "auto"
+
+
+def no_data(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Windows without an RTE for lack of data, across window lengths: ``freq``, ``window``, ``reason``.
+
+    ``tables`` maps a label ("day", "month", "year") to a ``window_rte`` table. Windows that were not assessed for
+    too few cycles are not "no data" and are left out.
+    """
+    parts = []
+    for label, t in tables.items():
+        if t is None or "status" not in t:
+            continue
+        bad = t[t["status"].str.startswith("no data")]
+        parts.append(pd.DataFrame({"freq": label, "window": bad.index.astype(str), "reason": bad["status"].to_numpy()}))
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["freq", "window", "reason"])
 
 
 def _hour_sum(x: pd.Series, hour: pd.DatetimeIndex) -> pd.Series:

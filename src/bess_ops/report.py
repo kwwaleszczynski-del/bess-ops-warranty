@@ -78,7 +78,9 @@ def kpi_rows(res: dict, month: str) -> list[tuple]:
     rows = []
 
     def add(label, value, ref=None, ok=None, unit="", bad="below"):
-        rows.append((label, value, ref, "" if ok is None else ("ok" if ok else bad), unit))
+        missing = value is None or (isinstance(value, (float, np.floating)) and np.isnan(value))
+        status = "no data" if missing and ref is not None else ("" if ok is None else ("ok" if ok else bad))
+        rows.append((label, value, ref, status, unit))
 
     add("Energy charged at the meter", k["e_in_mwh"], unit="MWh")
     add("Energy discharged at the meter", k["e_out_mwh"], unit="MWh")
@@ -89,6 +91,11 @@ def kpi_rows(res: dict, month: str) -> list[tuple]:
     rte_c = k["rte"] if defin == "incl_aux" else k["rte_excl_aux"]
     add(f"RTE, SoC-corrected ({'incl.' if defin == 'incl_aux' else 'excl.'} auxiliaries, LTSA definition)", rte_c, g,
         bool(rte_c >= g) if pd.notna(rte_c) else None)
+    if pd.isna(rte_c):
+        add("Why there is no RTE this month", str(k.get("rte_status", "")).removeprefix("no data: ") or "no data")
+    nd_days = int(m["daily"]["status"].str.startswith("no data").sum()) if len(m["daily"]) else 0
+    if nd_days:
+        add("Days of the month without an RTE (no data)", nd_days, 0, False, bad="above")
     other = k["rte_excl_aux"] if defin == "incl_aux" else k["rte"]
     add(f"RTE, SoC-corrected ({'excl.' if defin == 'incl_aux' else 'incl.'} auxiliaries)", other)
     add("RTE, metered out / in (uncorrected)", k["rte_raw"])
@@ -98,8 +105,9 @@ def kpi_rows(res: dict, month: str) -> list[tuple]:
             bool(k["availability"] >= ga))
     ay = m["state"]["availability_year"]
     if ay is not None and len(ay):
-        add("Availability, LTSA year to date", ay["availability"].iloc[-1], lt["availability"]["guaranteed"],
-            bool(ay["availability"].iloc[-1] >= lt["availability"]["guaranteed"]))
+        last = ay["availability"].iloc[-1]
+        add("Availability, LTSA year to date", last, lt["availability"]["guaranteed"],
+            bool(last >= lt["availability"]["guaranteed"]) if pd.notna(last) else None)
     add("Equivalent full cycles (warranty basis)", k["efc"], unit="EFC")
     if "rainflow_efc" in k:
         add("Rainflow cycles (sum of depths)", k["rainflow_efc"], unit="EFC")
@@ -129,8 +137,10 @@ def kpi_rows(res: dict, month: str) -> list[tuple]:
 
 
 def _fmt(v, unit=""):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return ""
+    if v is None or (isinstance(v, (float, np.floating)) and np.isnan(v)):
+        return "no data"
+    if isinstance(v, str):
+        return v
     if isinstance(v, (int, np.integer)):
         return f"{v:d}"
     if unit in ("MWh",):
@@ -166,7 +176,17 @@ def ld_table(res: dict, month: str) -> pd.DataFrame:
     ld = month_slice(res, month)["state"]["ld"]
     return ld.rename(columns={"ltsa_year": "LTSA year", "availability": "Availability LD", "rte": "RTE LD",
                               "capacity": "Capacity LD", "total": "Total", "cap": "Cap", "capped_total": "Payable",
-                              "currency": "Currency"})
+                              "currency": "Currency", "rte_windows_no_data": "RTE windows without data",
+                              "availability_periods_no_data": "Availability periods without data"})
+
+
+def no_data_table(res: dict, month: str) -> pd.DataFrame:
+    """The windows of the month (and the month itself) that have no RTE for lack of data, with the reason."""
+    nd = res.get("rte_no_data")
+    if nd is None or nd.empty:
+        return pd.DataFrame(columns=["Window length", "Window", "Reason"])
+    sel = nd[nd["window"].str.startswith(month) | ((nd["freq"] == "year") & nd["window"].eq(month[:4]))]
+    return sel.rename(columns={"freq": "Window length", "window": "Window", "reason": "Reason"}).reset_index(drop=True)
 
 
 def test_table(res: dict, month: str | None = None) -> pd.DataFrame:
@@ -233,7 +253,7 @@ def write_excel(res: dict, month: str, path: Path) -> Path:
     for c in ws[4]:
         c.fill, c.font = HEADER_FILL, HEADER_FONT
     for label, value, ref, status, unit in kpi_rows(res, month):
-        ws.append([label, _cell(value), _cell(ref), status, unit])
+        ws.append([label, "no data" if _fmt(value) == "no data" else _cell(value), _cell(ref), status, unit])
         r = ws.max_row
         fmt = "0.0%" if unit == "" and isinstance(value, (float, np.floating)) and abs(value) <= 1.5 else "#,##0.0"
         if unit == "1/h":
@@ -244,6 +264,7 @@ def write_excel(res: dict, month: str, path: Path) -> Path:
     ws.conditional_formatting.add(f"D5:D{last}", CellIsRule(operator="equal", formula=['"below"'], fill=RED))
     ws.conditional_formatting.add(f"D5:D{last}", CellIsRule(operator="equal", formula=['"above"'], fill=RED))
     ws.conditional_formatting.add(f"D5:D{last}", CellIsRule(operator="equal", formula=['"ok"'], fill=GREEN))
+    ws.conditional_formatting.add(f"D5:D{last}", CellIsRule(operator="equal", formula=['"no data"'], fill=AMBER))
     ws.column_dimensions["A"].width = 70
     for col in "BCDE":
         ws.column_dimensions[col].width = 18
@@ -283,6 +304,7 @@ def write_excel(res: dict, month: str, path: Path) -> Path:
     if len(vt):
         ws_v.conditional_formatting.add(f"A2:H{len(vt) + 1}", CellIsRule(operator="equal", formula=['""'],
                                                                          fill=PatternFill()))
+    _sheet(wb, "RTE no data", no_data_table(res, month))
     ldt = ld_table(res, month)
     ws_l = _sheet(wb, "LD (illustrative)", ldt)
     if len(ldt):
@@ -411,7 +433,7 @@ main{max-width:1100px;margin:0 auto;padding:20px 16px 48px}h1{font-size:1.5rem;m
 h2{font-size:1.1rem;margin:28px 0 6px}.muted{color:var(--ink2)}.note{color:var(--ink2);font-size:.85rem}
 .scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;background:var(--surface);font-size:.85rem}
 th,td{border:1px solid var(--ring);padding:4px 6px;text-align:left;vertical-align:top}th{background:#1f3a5f;color:#fff}
-td.ok{background:var(--good)}td.below{background:var(--bad)}img{max-width:100%;height:auto;background:#fff;
+td.ok{background:var(--good)}td.below,td.above{background:var(--bad)}td.nodata{background:var(--warn)}img{max-width:100%;height:auto;background:#fff;
 border-radius:6px}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:14px 0}
 .tile{background:var(--surface);border:1px solid var(--ring);border-radius:8px;padding:10px}.tile .v{font-size:1.4rem;
 font-weight:650}.tile .l{color:var(--ink2);font-size:.8rem}
@@ -424,15 +446,18 @@ def write_html(res: dict, month: str, path: Path) -> Path:
     rows = kpi_rows(res, month)
     tr = []
     for label, value, ref, status, unit in rows:
-        tr.append(f"<tr><td>{html.escape(label)}</td><td>{_fmt(value, unit)} {html.escape(unit)}</td>"
-                  f"<td>{_fmt(ref, unit) if ref is not None else ''}</td><td class='{status}'>{status}</td></tr>")
+        shown = _fmt(value, unit)
+        tr.append(f"<tr><td>{html.escape(label)}</td><td>{html.escape(shown)}{'' if shown == 'no data' else ' '}"
+                  f"{'' if shown == 'no data' else html.escape(unit)}</td>"
+                  f"<td>{_fmt(ref, unit) if ref is not None else ''}</td>"
+                  f"<td class='{status.replace(' ', '')}'>{status}</td></tr>")
     kpi = ("<div class='scroll'><table><thead><tr><th>KPI</th><th>Value</th><th>Guarantee / limit</th>"
            f"<th>Status</th></tr></thead><tbody>{''.join(tr)}</tbody></table></div>")
     k = res["monthly"].loc[month]
     state = month_slice(res, month)["state"]
     ld = state["ld"]
     cur = ld["currency"].iloc[0] if len(ld) else ""
-    tiles = [("RTE incl. aux", f"{k['rte']:.1%}" if pd.notna(k["rte"]) else "n/a"),
+    tiles = [("RTE incl. aux", f"{k['rte']:.1%}" if pd.notna(k["rte"]) else "no data"),
              ("RTE excl. aux", f"{k['rte_excl_aux']:.1%}" if pd.notna(k["rte_excl_aux"]) else "n/a"),
              ("Availability", f"{k['availability']:.2%}" if "availability" in k and pd.notna(k["availability"])
               else "n/a"),
@@ -471,7 +496,13 @@ def write_html(res: dict, month: str, path: Path) -> Path:
 <h2>Warranty violations (started this month, and open yearly limits)</h2>{_table(violation_table(res, month))}
 <p class="note">Violations that overlap a logged capacity test or outage are listed with that event; whether they
 are excused depends on the warranty.</p>
+<h2>Windows without an RTE for lack of data (this month)</h2>{_table(no_data_table(res, month))}
+<p class="note">A window with a gap in the meter readings, without a known stored energy at its ends or without a
+determined one-way efficiency has no RTE; it is not assessed against the guarantee and is no evidence of compliance.
+Days with too few cycles are not listed (not assessed).</p>
 <h2>Liquidated damages per LTSA year, up to the end of this month (illustrative)</h2>{_table(ld_table(res, month))}
+<p class="note">Columns "without data": windows or periods that could not be assessed; their damages are not
+zero but unknown.</p>
 <h2>Capacity tests up to this month</h2>{_table(test_table(res, month))}{fc_html}
 {charts}
 <h2>Energy balance of the month (MWh)</h2>{_table(res['balance'].loc[[month]].round(2).reset_index())}

@@ -81,6 +81,7 @@ project bess-soc-soh-degradation, which separates a constant standby drain (an e
 batteries); circles: the efficiency factors registered with AEMO. SCADA readings are 5-minute snapshots that net
 out regulation inside an interval, which biases the RTE low, most for one-hour units.</p>
 <div class="card"><div id="rte-plot" class="plot tall"></div></div>
+<p class="note" id="rte-nodata"></p>
 
 <h2>2. Availability: what is offered and what is physically there</h2>
 <p>Capacity-weighted availability from the discharge availability each battery offers (DISPATCHLOAD.AVAILABILITY
@@ -109,7 +110,7 @@ with a consistent stored-energy report.</p>
 <p>ACEN publishes 5-minute power and SoC of both 100 MW sections. Computing the daily RTE three ways separates the
 two things that differ between an operator's data and market data: the metering point (A vs B) and the source of
 the stored energy (B vs C). The medians from reported energy are close to those from the operator's SoC, the
-single days are not: the daily RTE from reported energy is two to three times as noisy.</p>
+single days are not: the daily RTE from reported energy is two to four times as noisy.</p>
 <div class="card"><div id="acen-plot" class="plot"></div></div>
 <div class="card scroll" style="margin-top:12px"><table id="acen-table"></table></div>
 
@@ -170,6 +171,7 @@ function tiles() {
   const F = D.fleet ? D.fleet.summary : [];
   const mw = F.reduce((s, r) => s + r.mw, 0);
   const rte = median(F.map(r => r.rte_daily_median));
+  const withRte = F.filter(r => r.rte_daily_median != null).length;
   const av = median(F.map(r => r.availability_capacity));
   const avs = median(F.map(r => r.availability_capacity_soc_ok));
   const IS = F.filter(r => r.in_service_months >= 6);
@@ -179,7 +181,7 @@ function tiles() {
   const V = D.synthetic.verification;
   const t = [
     [`${F.length} batteries`, `${fmt(mw / 1000, 1)} GW in the NEM benchmark, Oct 2025 - Sep 2026`],
-    [pct(rte, 1), "median daily RTE at the SCADA point (median over batteries)"],
+    [pct(rte, 1), `median daily RTE at the SCADA point (${withRte} batteries with daily data, ${F.length - withRte} without)`],
     avt == null ? [`${pct(av, 0)} / ${pct(avs, 0)}`, "median offered availability: all intervals / with energy stored"]
       : [`${pct(avo, 0)} / ${pct(avt, 1)}`, `median availability, ${IS.length} batteries in service for 6+ months: offered vs technical (declared physical, PASA)`],
   ];
@@ -191,8 +193,15 @@ function tiles() {
     `<div class="card tile"><div class="v">${x[0]}</div><div class="l">${x[1]}</div></div>`).join("");
 }
 
+const noRte = r => r.rte_status != null && r.rte_status !== "ok";
 function rtePlot() {
   if (!D.fleet) return;
+  const nd = D.fleet.summary.filter(noRte);
+  document.getElementById("rte-nodata").innerHTML = nd.length
+    ? `<b>No RTE for the year (no data) for ${nd.length} of ${D.fleet.summary.length} batteries:</b> ` +
+      nd.map(r => `${r.duid} (${r.rte_status.replace("no data: ", "")})`).join("; ") +
+      ". They are not in the yearly medians; they are not counted as zero."
+    : "";
   const s = D.fleet.summary.filter(r => r.rte_daily_median != null && r.valid_days >= 30)
     .sort((a, b) => a.rte_daily_median - b.rte_daily_median);
   const y = s.map(label);
@@ -279,8 +288,8 @@ const COLS = [
   ["mwh", "MWh", r => fmt(r.mwh, 0), 1], ["operational_months", "Months", r => r.operational_months, 1],
   ["efc_per_year", "EFC / yr", r => fmt(r.efc_per_year, 0), 1],
   ["rainflow_efc_per_year", "Rainflow EFC / yr", r => fmt(r.rainflow_efc_per_year, 0), 1],
-  ["rte_corrected", "RTE year", r => pct(r.rte_corrected), 1],
-  ["rte_daily_median", "RTE daily median", r => pct(r.rte_daily_median), 1],
+  ["rte_corrected", "RTE year", r => noRte(r) ? "no data" : pct(r.rte_corrected), 1],
+  ["rte_daily_median", "RTE daily median", r => noRte(r) ? "no data" : pct(r.rte_daily_median), 1],
   ["rte_regression_companion", "Conversion RTE (regr.)", r => pct(r.rte_regression_companion), 1],
   ["availability_capacity", "Offered avail.", r => pct(r.availability_capacity), 1],
   ["availability_capacity_soc_ok", "Offered avail., energy stored", r => pct(r.availability_capacity_soc_ok), 1],

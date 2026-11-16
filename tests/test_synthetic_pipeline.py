@@ -113,3 +113,19 @@ def test_cli_run_on_a_short_export(demo, tmp_path):
     assert (tmp_path / "out" / "report_2025-10.xlsx").exists()
     daily = pd.read_csv(tmp_path / "out" / "rte_daily.csv", index_col=0)
     assert daily.loc["2025-10-26", "hours"] == 25
+
+
+def test_report_says_no_data_when_a_month_has_no_rte(demo):
+    # old code: the RTE row had no status at all and the value cell was empty
+    from bess_ops.report import kpi_rows, no_data_table
+    sim, frame, res = demo
+    r2 = {**res, "monthly": res["monthly"].copy(), "daily": res["daily"].copy(), "rte_no_data": res["rte_no_data"]}
+    r2["monthly"].loc["2026-08", ["rte", "rte_excl_aux"]] = np.nan
+    r2["monthly"].loc["2026-08", "rte_status"] = "no data: gap in the meter readings"
+    r2["daily"].loc["2026-08-10", "status"] = "no data: gap in the meter readings"
+    rows = {r[0]: r for r in kpi_rows(r2, "2026-08")}
+    rte_row = next(v for k, v in rows.items() if k.startswith("RTE, SoC-corrected (incl."))
+    assert rte_row[3] == "no data"
+    assert rows["Why there is no RTE this month"][1] == "gap in the meter readings"
+    assert rows["Days of the month without an RTE (no data)"][1] == 1
+    assert len(no_data_table(res, "2026-08")) == 0          # the demo battery has no gaps: nothing to list

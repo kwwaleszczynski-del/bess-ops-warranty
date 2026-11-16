@@ -138,7 +138,9 @@
       "capacity": 0.0,
       "total": 19473.43696139621,
       "cap": 500000.0,
-      "capped_total": 19473.43696139621
+      "capped_total": 19473.43696139621,
+      "rte_windows_no_data": 0,
+      "availability_periods_no_data": 0
     },
     {
       "ltsa_year": "2",
@@ -147,7 +149,9 @@
       "capacity": 0.0,
       "total": 15455.710775842934,
       "cap": 500000.0,
-      "capped_total": 15455.710775842934
+      "capped_total": 15455.710775842934,
+      "rte_windows_no_data": 0,
+      "availability_periods_no_data": 0
     }
   ]
 }

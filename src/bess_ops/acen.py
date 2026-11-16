@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from bess_ops.cycles import rainflow, rainflow_efc
-from bess_ops.energy import interval_flows, inverted_days, state_jumps, window_keys, window_rte
+from bess_ops.energy import carried_eta, interval_flows, inverted_days, state_jumps, window_keys, window_rte
 from bess_ops.nem import NEM_TZ, Cache, unit_benchmark, unit_site
 from bess_ops.schema import site_frame
 
@@ -92,7 +92,7 @@ def validate(cache: Cache, acen_dir: Path) -> dict:
         op, mk = op.loc[common], mk.loc[common]
         cfg = {"aux_metering": "none", "soc_energy_mwh": cal["scale_mwh"], "timezone": NEM_TZ, "cod": None}
         d_a = window_rte(op, cfg, "D")
-        m_a = window_rte(op, cfg, "M", float(d_a["eta"].iloc[0]), min_efc=1.0)
+        m_a = window_rte(op, cfg, "M", carried_eta(d_a), min_efc=1.0)
         # B: SCADA flows with the operator's SoC (scale fitted on the SCADA flows)
         soc = pd.Series(acen[f"soc_{k}"].reindex(common.tz_convert(NEM_TZ).tz_localize(None)).to_numpy(),
                         index=common)
@@ -154,6 +154,8 @@ def validate(cache: Cache, acen_dir: Path) -> dict:
             "soc_below_5_operator": float((soc_raw <= 0.05).mean()),
             "soc_below_5_market": float((rep_raw <= 0.05).mean()),
             "daily_days": len(both),
+            "daily_windows_no_data_operator": int(d_a["status"].str.startswith("no data").sum()),
+            "daily_windows_no_data_scada_soc": int(d_b["status"].str.startswith("no data").sum()),
             "daily_rte_median_A_operator": float(both["rte_operator"].median()) if has else np.nan,
             "daily_rte_median_B_scada_operator_soc": float(both["rte_scada_operator_soc"].median()) if has else np.nan,
             "daily_rte_median_C_market": float(both["rte_market"].median()) if has else np.nan,

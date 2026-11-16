@@ -19,7 +19,7 @@ dependencies = [
     "openpyxl>=3.1",
     "matplotlib>=3.8",
     "requests>=2.31",
-    "res-asset-kpi>=0.1,<0.2",
+    "res-asset-kpi>=0.1.2,<0.2",
 ]
 
 [project.optional-dependencies]

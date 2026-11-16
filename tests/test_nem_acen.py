@@ -162,3 +162,23 @@ def test_missing_scada_readings_invalidate_the_month_not_its_rte():
     monthly, summary, daily = unit_benchmark(cache, "TEST1")
     assert np.isnan(monthly.loc["2026-01", "rte"]) and monthly.loc["2026-02", "rte"] == pytest.approx(0.92, abs=0.01)
     assert "2026-01-12" not in daily.index and "2026-01-13" in daily.index
+
+
+def test_corrected_total_only_counts_months_with_a_known_change_of_stored_energy():
+    # old code: the second month's energy counted, its unknown change of stored energy counted as zero
+    from bess_ops.nem import _corrected_total
+    from bess_ops.energy import corrected_rte
+    op = pd.DataFrame({"stored_consistent": [True, True, True], "e_out_mwh": [80.0, 90.0, 70.0],
+                       "e_in_mwh": [100.0, 100.0, 100.0], "d_stored_mwh": [10.0, np.nan, 0.0]},
+                      index=["2026-01", "2026-02", "2026-03"])
+    assert _corrected_total(op, 0.9) == pytest.approx(float(corrected_rte(150.0, 200.0, 10.0, 0.9)))
+    assert np.isnan(_corrected_total(op, float("nan")))            # an undetermined efficiency is no RTE
+
+
+def test_a_battery_without_a_consistent_report_has_no_rte_and_says_why():
+    # old code: no status at all, the NaN simply fell out of every median
+    monthly, summary, daily = unit_benchmark(fake_cache(days=31, inverted_days=31), "TEST1")
+    assert np.isnan(summary["rte_corrected"]) and len(daily) == 0
+    assert summary["rte_status"] == "no data: no month with a consistent stored-energy report"
+    ok = unit_benchmark(fake_cache(), "TEST1")[1]
+    assert ok["rte_status"] == "ok" and np.isfinite(ok["eta"]) and ok["eta"] == pytest.approx(0.92 ** 0.5, abs=0.01)

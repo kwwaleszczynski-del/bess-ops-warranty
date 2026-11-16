@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 
 from bess_ops.cycles import rainflow
-from bess_ops.energy import interval_flows, inverted_days, state_jumps, window_keys, window_rte
+from bess_ops.energy import carried_eta, interval_flows, inverted_days, state_jumps, window_keys, window_rte
 from bess_ops.schema import site_frame
 
 log = logging.getLogger(__name__)
@@ -248,8 +248,12 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
     soc = adjusted / mwh
 
     mrte = window_rte(site, cfg, "M", "auto", flows_c, min_efc=min_month_efc)
+    # the one-way efficiency comes from the complete months; if no month is complete (months next to a masked
+    # month have no known change of stored energy) the days find their own; if neither, it stays undetermined
+    drte = window_rte(site, cfg, "D", carried_eta(mrte), flows_c)
     eta = float(mrte["eta"].iloc[0])
-    drte = window_rte(site, cfg, "D", eta, flows_c)
+    if not np.isfinite(eta):
+        eta = float(drte["eta"].iloc[0])
 
     # the state of charge (reported energy / registered MWh) is only used where the report passed the checks
     g = pd.DataFrame({"m": mk, "mw": mw.to_numpy(), "mwh": mwh.to_numpy(), "avail": site["p_avail_dis"].to_numpy(),
@@ -350,6 +354,7 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
             if op["rainflow_efc"].sum() > 0 else np.nan,
             "rte_raw": float(op["e_out_mwh"].sum() / op["e_in_mwh"].sum()),
             "rte_corrected": _corrected_total(op, eta),
+            "eta": eta,
             "rte_daily_median": float(vd["rte"].median()) if len(vd) else np.nan,
             "rte_daily_p25": float(vd["rte"].quantile(0.25)) if len(vd) else np.nan,
             "rte_daily_p75": float(vd["rte"].quantile(0.75)) if len(vd) else np.nan,
@@ -379,6 +384,7 @@ def unit_benchmark(cache: Cache, duid: str, min_month_efc: float = 1.0) -> tuple
             summary["availability_offered_in_service"] = _weighted(ts, "availability_capacity")
             summary["availability_offered_soc_ok_in_service"] = _weighted(ts, "availability_capacity_soc_ok")
         summary.update(window_trend(op))
+    summary["rte_status"] = rte_status(summary, drte)
     return monthly, summary, vd["rte"].rename(duid)
 
 
@@ -388,12 +394,28 @@ def _weighted(op: pd.DataFrame, col: str) -> float:
 
 
 def _corrected_total(op: pd.DataFrame, eta: float) -> float:
+    """RTE over the operational months with a consistent report and a known change of stored energy (a month next
+    to a masked month has none: its energy would count while its change of stored energy counted as zero)."""
     from bess_ops.energy import corrected_rte
-    ok = op["stored_consistent"]
-    if not ok.any():
+    ok = op["stored_consistent"] & op["d_stored_mwh"].notna()
+    if not ok.any() or not np.isfinite(eta):
         return np.nan
     return float(corrected_rte(op.loc[ok, "e_out_mwh"].sum(), op.loc[ok, "e_in_mwh"].sum(),
                                op.loc[ok, "d_stored_mwh"].sum(), eta))
+
+
+def rte_status(summary: dict, daily: pd.DataFrame) -> str:
+    """"ok", or why the battery has no RTE ("no data: ..."): it was never operational for three months, no month had
+    a consistent stored-energy report with a known change, or the one-way efficiency could not be determined."""
+    if not summary.get("operational_months"):
+        return "no data: no operational month"
+    if np.isfinite(summary.get("rte_corrected", np.nan)):
+        return "ok"
+    if summary.get("consistent_months", 0) == 0:
+        return "no data: no month with a consistent stored-energy report"
+    if not np.isfinite(summary.get("eta", np.nan)):
+        return "no data: one-way efficiency not determined"
+    return "no data: stored energy unknown at the ends of the consistent months"
 
 
 def window_trend(op: pd.DataFrame, min_months: int = 6) -> dict:

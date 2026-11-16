@@ -17,7 +17,7 @@ from bess_ops import availability as av
 from bess_ops.auxiliaries import fit_aux_temperature
 from bess_ops.capacity import evaluate_tests, find_test_windows, forecast_soh, handoff
 from bess_ops.cycles import depth_histogram, rainflow, rainflow_efc, throughput_energy
-from bess_ops.energy import energy_balance, interval_flows, window_keys, window_rte
+from bess_ops.energy import carried_eta, energy_balance, interval_flows, no_data, window_keys, window_rte
 from bess_ops.ld import liquidated_damages
 from bess_ops.schema import data_quality
 from bess_ops.warranty import detect_violations, warranty_status
@@ -59,6 +59,7 @@ def monthly_kpis(site, site_cfg, warranty, ltsa, monthly_rte, avail_m, violation
     k["rte_raw"] = monthly_rte["rte_raw"]
     k["rte"] = monthly_rte["rte"]
     k["rte_excl_aux"] = monthly_rte["rte_excl_aux"]
+    k["rte_status"] = monthly_rte["status"]
     k["rte_guaranteed"] = ltsa["rte"]["guaranteed"]
     if avail_m is not None:
         k["availability"] = avail_m["availability"].reindex(k.index)
@@ -98,10 +99,15 @@ def analyse(site: pd.DataFrame, site_cfg: dict, warranty: dict, ltsa: dict,
     eta = ltsa["rte"]["one_way_efficiency"]
     flows = interval_flows(site, site_cfg)
     res["daily"] = window_rte(site, site_cfg, "D", eta, flows)
-    eta_used = float(res["daily"]["eta"].iloc[0])
+    eta_used = carried_eta(res["daily"])          # the daily efficiency, or "auto" if the days found none
     res["monthly_rte"] = window_rte(site, site_cfg, "M", eta_used, flows, ltsa["rte"]["min_efc"])
     year_freq = "LY" if site_cfg.get("cod") is not None else "Y"
-    res["yearly_rte"] = window_rte(site, site_cfg, year_freq, eta_used, flows)
+    res["yearly_rte"] = window_rte(site, site_cfg, year_freq, carried_eta(res["monthly_rte"])
+                                   if eta_used == "auto" else eta_used, flows)
+    res["rte_no_data"] = no_data({"day": res["daily"], "month": res["monthly_rte"], "year": res["yearly_rte"]})
+    if len(res["rte_no_data"]):
+        counts = res["rte_no_data"].groupby("freq").size().to_dict()
+        log.warning("windows without an RTE for lack of data: %s (see results['rte_no_data'])", counts)
     res["balance"] = energy_balance(site, site_cfg, "M", flows)
     res["aux"] = fit_aux_temperature(site, site_cfg)
 
@@ -209,9 +215,13 @@ def ld_by_year(avail_year, rte_windows, tests, ltsa, site_cfg) -> pd.DataFrame:
         it = ld["items"].assign(ltsa_year=y)
         items.append(it)
         by = it.groupby("kind")["amount"].sum()
+        # windows that could not be assessed must not read as "no damages": count them next to the amounts
+        rte_nd = int(rw["status"].str.startswith("no data").sum()) if rw is not None and len(rw) else 0
+        av_nd = int(ay["availability"].isna().sum()) if ay is not None and len(ay) else 0
         rows.append({"ltsa_year": y, "availability": by.get("availability", 0.0), "rte": by.get("rte", 0.0),
                      "capacity": by.get("capacity", 0.0), "total": ld["total"], "cap": ld["cap"],
-                     "capped_total": ld["capped_total"], "currency": ld["currency"]})
+                     "capped_total": ld["capped_total"], "currency": ld["currency"],
+                     "rte_windows_no_data": rte_nd, "availability_periods_no_data": av_nd})
     out = pd.DataFrame(rows)
     out.attrs["items"] = pd.concat(items, ignore_index=True) if items else pd.DataFrame()
     return out

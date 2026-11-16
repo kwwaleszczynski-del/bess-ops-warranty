@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from bess_ops.energy import (corrected_rte, energy_balance, inverted_days, state_jumps, window_keys, window_rte)
+from bess_ops.config import ltsa_from_dict, site_from_dict
 from bess_ops.schema import site_frame
 
 
@@ -179,3 +180,86 @@ def test_hourly_sums_for_the_state_checks_need_every_interval():
     from bess_ops.energy import _hour_sum
     s = _hour_sum(x, idx.floor("1h"))
     assert np.isnan(s.iloc[0]) and s.iloc[1] == 12.0
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# An undetermined one-way efficiency (NaN) is no data, never a number
+# ---------------------------------------------------------------------------------------------------------------------
+
+def month_ending_fuller(state_gap=False):
+    """The month of cycles, but the last day discharges less, so the month ends fuller: the correction needs eta."""
+    idx, p, e, cfg, tz = month_of_cycles()
+    last = (idx.normalize() == idx.normalize()[-1]) & (idx.hour >= 18) & (idx.hour < 22)
+    p = np.where(last, p * 0.7, p)
+    e = np.empty(len(idx))
+    e[0] = 8.0
+    for i in range(1, len(idx)):
+        q = p[i - 1]
+        e[i] = e[i - 1] + (-q * 0.95 if q < 0 else -q / 0.95)
+    if state_gap:                       # the stored energy is unknown for 7 hours around every day boundary
+        for d in range(1, 30):
+            e[d * 24 - 3: d * 24 + 4] = np.nan
+    return site_frame({"p_meter": p, "e_stored": e}, idx, tz), cfg
+
+
+def test_a_window_without_a_determined_efficiency_is_not_valid():
+    # old code: the complete month had valid=True with an RTE of NaN, and a damages routine read that as 0
+    site, cfg = month_ending_fuller()
+    r = window_rte(site, cfg, "M", float("nan")).iloc[0]
+    assert np.isnan(r["rte"]) and not r["valid"]
+    assert r["status"] == "no data: one-way efficiency not determined"
+    assert window_rte(site, cfg, "M", 0.95).iloc[0]["valid"]
+
+
+def test_status_names_the_reason_for_every_window():
+    site, cfg = month_ending_fuller()
+    d = window_rte(site, cfg, "D", 0.95)
+    assert set(d["status"]) <= {"ok", "too few cycles"} and d.loc["2025-06-30", "status"] == "ok"
+    idx = site.index
+    gap = site.copy()
+    gap.iloc[5 * 24 + 18: 5 * 24 + 22, gap.columns.get_loc("p_meter")] = np.nan
+    gap.iloc[9 * 24 - 3: 9 * 24 + 4, gap.columns.get_loc("e_stored")] = np.nan
+    s = window_rte(gap, cfg, "D", 0.95)
+    assert s.loc["2025-06-06", "status"] == "no data: gap in the meter readings"
+    assert s.loc["2025-06-10", "status"] == "no data: stored energy unknown at the window ends"
+    assert s.loc["2025-06-09", "status"] == "no data: stored energy unknown at the window ends"
+    idle = site.copy()
+    idle.iloc[:24, idle.columns.get_loc("p_meter")] = 0.0
+    assert window_rte(idle, cfg, "D", 0.95).loc["2025-06-01", "status"] == "too few cycles"
+    assert idx is not None
+
+
+def test_carried_efficiency_falls_back_to_auto_so_a_complete_month_keeps_its_rte():
+    # old code: the daily NaN was handed to the month, which lost an RTE it could compute (and a missing import)
+    from bess_ops.energy import carried_eta
+    site, cfg = month_ending_fuller(state_gap=True)
+    d = window_rte(site, cfg, "D")
+    assert not d["valid"].any() and np.isnan(d["eta"].iloc[0])
+    assert carried_eta(d) == "auto"
+    m = window_rte(site, cfg, "M", carried_eta(d)).iloc[0]
+    assert m["valid"] and m["rte"] == pytest.approx(0.95 ** 2, abs=2e-3) and m["eta"] == pytest.approx(0.95, abs=1e-6)
+    full, _ = month_ending_fuller()
+    assert carried_eta(window_rte(full, cfg, "D")) == pytest.approx(0.95, abs=1e-6)
+
+
+def test_windows_without_data_are_listed_not_the_idle_ones():
+    from bess_ops.energy import no_data
+    site, cfg = month_ending_fuller(state_gap=True)
+    nd = no_data({"day": window_rte(site, cfg, "D"), "month": window_rte(site, cfg, "M", float("nan"))})
+    assert set(nd["freq"]) == {"day", "month"} and len(nd[nd["freq"] == "day"]) == 30
+    assert nd.loc[nd["freq"] == "month", "reason"].iloc[0] == "no data: one-way efficiency not determined"
+    assert nd["reason"].str.startswith("no data").all()
+
+
+def test_damages_count_windows_without_data_instead_of_reading_them_as_zero():
+    # old code: no such column, and the window silently counted as "no damages"
+    from bess_ops.pipeline import ld_by_year
+    site, cfg = month_ending_fuller()
+    lt = ltsa_from_dict({"ld": {"rte": {"method": "energy_cost", "price_per_mwh": 100.0}},
+                         "rte": {"guaranteed": 0.99, "min_efc": 1.0}},
+                        site_from_dict({"power_mw": 10, "energy_mwh": 20}))
+    w = window_rte(site, cfg, "M", float("nan"))
+    out = ld_by_year(None, w, None, lt, {"timezone": "Europe/Warsaw", "cod": None})
+    assert out["rte_windows_no_data"].iloc[0] == 1 and out["rte"].iloc[0] == 0.0
+    ok = ld_by_year(None, window_rte(site, cfg, "M", 0.95), None, lt, {"timezone": "Europe/Warsaw", "cod": None})
+    assert ok["rte_windows_no_data"].iloc[0] == 0 and ok["rte"].iloc[0] > 0
